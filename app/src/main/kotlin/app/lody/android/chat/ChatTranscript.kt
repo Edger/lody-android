@@ -242,7 +242,7 @@ fun ChatTranscript(
     LaunchedEffect(entries) {
         withFrameNanos { }
         val fresh = keys.pending.firstOrNull { it !in announced } ?: return@LaunchedEffect
-        announced += keys.pending
+        announced.addAll(keys.pending)
         val index = keys.indexOf(fresh)
         if (index < 0) return@LaunchedEffect
         val layout = state.layoutInfo

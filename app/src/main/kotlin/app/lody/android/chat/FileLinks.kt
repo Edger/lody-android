@@ -100,7 +100,7 @@ private fun ASTNode.insideLink(): Boolean = generateSequence(parent) { it.parent
 @Composable
 internal fun rememberFileLinkMarkdown(): Pair<MarkdownAnnotator, MarkdownInlineContent> {
     val colors = LodyTheme.colors
-    return remember(colors.textLink) {
+    val (annotator, icons) = remember(colors.textLink) {
         val style = TextLinkStyles(style = SpanStyle(color = colors.textLink))
         val annotator = markdownAnnotator { content, child ->
             // Inline code that is exactly one Markdown file path reads as a file link, as on Web;
@@ -132,6 +132,7 @@ internal fun rememberFileLinkMarkdown(): Pair<MarkdownAnnotator, MarkdownInlineC
         val icon = InlineTextContent(Placeholder(1.1.em, 1.em, PlaceholderVerticalAlign.TextCenter)) {
             Icon(LodyIcons.File, contentDescription = null, tint = colors.textLink, modifier = Modifier.fillMaxSize())
         }
-        annotator to markdownInlineContent(mapOf(FILE_ICON to icon))
+        annotator to mapOf(FILE_ICON to icon)
     }
+    return annotator to markdownInlineContent(icons)
 }
