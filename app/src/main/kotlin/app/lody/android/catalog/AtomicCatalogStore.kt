@@ -1,5 +1,8 @@
 package app.lody.android.catalog
 
+import app.lody.android.create.CreationOptionsStore
+import app.lody.android.create.BranchCache
+import app.lody.android.create.BranchPage
 import android.content.Context
 import android.util.AtomicFile
 import app.lody.android.auth.*
@@ -14,9 +17,9 @@ import java.io.File
 import java.security.MessageDigest
 
 /** Whole display snapshots, serialized on IO. No tokens, CRDT replicas or cursors. */
-internal class AtomicCatalogStore(context: Context, name: String = "catalog") : CatalogStore {
+internal class AtomicCatalogStore(context: Context, name: String = "catalog") : CatalogStore, CreationOptionsStore, WorkspaceMemberStore, app.lody.android.schedules.ScheduleStore, app.lody.android.home.SettingsSnapshotStore {
     init { require(name.matches(Regex("[a-zA-Z0-9_-]+"))) }
-    private val directory = File(context.noBackupFilesDir, name)
+    private val directory = File(context.noBackupFilesDir, name + app.lody.android.BackendEnvironment.storageSuffix)
     private val mutex = Mutex()
     private suspend fun <T> io(block: () -> T): T = mutex.withLock { withContext(Dispatchers.IO) { block() } }
     private val accountFile get() = File(directory, "account.json")
@@ -46,23 +49,139 @@ internal class AtomicCatalogStore(context: Context, name: String = "catalog") : 
     private fun context(): AccountContext? {
         val json = load(accountFile, 1024 * 1024) ?: return null
         return try {
-            val workspaces = json.getJSONArray("workspaces").objects().map { Workspace(it.getString("id"), it.getString("name")) }
-            val account = Account(json.getString("id"), json.getString("name"), workspaces)
+            val workspaces = json.getJSONArray("workspaces").objects().map { Workspace(it.getString("id"), it.getString("name"), httpsImage(it.optString("image")), it.optString("slug").takeIf { slug -> slug.isNotBlank() && slug != "null" }, WorkspaceContentMode.entries.firstOrNull { mode -> mode.name == it.optString("contentMode") } ?: WorkspaceContentMode.UNKNOWN, it.optString("genesisHash").takeUnless { value -> value.isBlank() || value == "null" }) }
+            val account = Account(json.getString("id"), json.getString("name"), workspaces, httpsImage(json.optString("image")), json.optString("email").takeUnless { it == "null" }.orEmpty())
             AccountContext(account, json.optString("selected").takeIf { id -> workspaces.any { it.id == id } })
         } catch (_: Exception) { AtomicFile(accountFile).delete(); null }
     }
     private fun saveContext(context: AccountContext) {
-        save(accountFile, JSONObject().put("id", context.account.id).put("name", context.account.name)
-            .put("workspaces", JSONArray(context.account.workspaces.map { JSONObject().put("id", it.id).put("name", it.name) }))
+        save(accountFile, JSONObject().put("id", context.account.id).put("name", context.account.name).put("image", context.account.image).put("email", context.account.email)
+            .put("workspaces", JSONArray(context.account.workspaces.map { JSONObject().put("id", it.id).put("name", it.name).put("image", it.image).put("slug", it.slug).put("contentMode", it.contentMode.name).put("genesisHash", it.genesisHash) }))
             .put("selected", context.workspaceId), 1024 * 1024)
     }
     private fun owns(scope: RuntimeScope): Boolean = context()?.account?.let { it.id == scope.accountId && it.workspaces.any { w -> w.id == scope.workspaceId } } == true
+    private fun optionsFile(scope: RuntimeScope, projectId: String?): File {
+        val key = JSONArray(listOf(scope.accountId, scope.workspaceId, projectId ?: "")).toString()
+        val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
+        return File(directory, "options-" + digest.joinToString("") { "%02x".format(it) } + ".json")
+    }
+    override suspend fun readOptions(scope: RuntimeScope, projectId: String?): CreationOptions? = io {
+        if (!owns(scope)) return@io null
+        val data = load(optionsFile(scope, projectId)) ?: return@io null
+        try {
+            require(data.getString("account") == scope.accountId && data.getString("workspace") == scope.workspaceId && data.getString("project") == (projectId ?: ""))
+            CreationJson.options(data.getJSONObject("options"))
+        } catch (_: Exception) { null }
+    }
+    override suspend fun writeOptions(scope: RuntimeScope, projectId: String?, options: CreationOptions) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        save(optionsFile(scope, projectId), JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId).put("project", projectId ?: "").put("options", CreationJson.encodeOptions(options)))
+        directory.listFiles()?.filter { it.name.startsWith("options-") && it.name.endsWith(".json") }
+            ?.sortedByDescending { it.lastModified() }?.drop(16)?.forEach { AtomicFile(it).delete() }
+        Unit
+    }
+    private fun branchFile(scope: RuntimeScope, repo: String): File {
+        val key = JSONArray(listOf(scope.accountId, scope.workspaceId, repo)).toString()
+        val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
+        return File(directory, "branches-" + digest.joinToString("") { "%02x".format(it) } + ".json")
+    }
+    override suspend fun readBranches(scope: RuntimeScope, repo: String): BranchCache? = io {
+        if (!owns(scope)) return@io null
+        val data = load(branchFile(scope, repo), 1024 * 1024) ?: return@io null
+        try {
+            require(data.getString("account") == scope.accountId && data.getString("workspace") == scope.workspaceId && data.getString("repo") == repo)
+            val names = data.getJSONArray("names").let { a -> (0 until a.length()).map { a.getString(it) } }
+            BranchCache(BranchPage(names, data.optString("default").takeIf { it.isNotEmpty() }, data.optInt("next").takeIf { it > 0 }), data.optString("selected"))
+        } catch (_: Exception) { null }
+    }
+    override suspend fun writeBranches(scope: RuntimeScope, repo: String, page: BranchPage) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        val file = branchFile(scope, repo)
+        val selected = load(file, 1024 * 1024)?.optString("selected").orEmpty()
+        save(file, JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId).put("repo", repo)
+            .put("names", JSONArray(page.names)).put("default", page.defaultBranch).put("next", page.nextPage).put("selected", selected), 1024 * 1024)
+        directory.listFiles()?.filter { it.name.startsWith("branches-") }?.sortedByDescending { it.lastModified() }?.drop(16)?.forEach { AtomicFile(it).delete() }
+        Unit
+    }
+    override suspend fun selectBranch(scope: RuntimeScope, repo: String, name: String) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        val file = branchFile(scope, repo)
+        val data = load(file, 1024 * 1024) ?: JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId)
+            .put("repo", repo).put("names", JSONArray())
+        save(file, data.put("selected", name), 1024 * 1024)
+    }
+    private fun runConfigsFile(scope: RuntimeScope) = File(directory, "runconfig-" + catalogFile(scope).name)
+    override suspend fun readRunConfigs(scope: RuntimeScope): RunConfigPrefs? = io {
+        if (!owns(scope)) return@io null
+        val data = load(runConfigsFile(scope), 1024 * 1024) ?: return@io null
+        try {
+            require(data.getString("account") == scope.accountId && data.getString("workspace") == scope.workspaceId)
+            CreationJson.runConfigs(data.getJSONObject("runConfigs"))
+        } catch (_: Exception) { AtomicFile(runConfigsFile(scope)).delete(); null }
+    }
+    override suspend fun writeRunConfigs(scope: RuntimeScope, value: RunConfigPrefs) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        save(runConfigsFile(scope), JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId)
+            .put("runConfigs", CreationJson.encodeRunConfigs(value)), 1024 * 1024)
+    }
+    private fun schedulesFile(scope: RuntimeScope) = File(directory, "schedules-" + catalogFile(scope).name)
+    override suspend fun readSchedules(scope: RuntimeScope): ScheduleList? = io {
+        if (!owns(scope)) return@io null
+        val data = load(schedulesFile(scope)) ?: return@io null
+        try {
+            require(data.getString("account") == scope.accountId && data.getString("workspace") == scope.workspaceId)
+            ScheduleJson.list(data.getJSONObject("schedules"))
+        } catch (_: Exception) { AtomicFile(schedulesFile(scope)).delete(); null }
+    }
+    override suspend fun writeSchedules(scope: RuntimeScope, value: ScheduleList) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        save(schedulesFile(scope), JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId)
+            .put("schedules", ScheduleJson.encodeList(value)))
+        directory.listFiles()?.filter { it.name.startsWith("schedules-") && it.name.endsWith(".json") }
+            ?.sortedByDescending { it.lastModified() }?.drop(8)?.forEach { AtomicFile(it).delete() }
+        Unit
+    }
+    private fun settingsFile(scope: RuntimeScope, kind: String): File {
+        require(kind.matches(Regex("[a-z0-9-]{1,40}")))
+        return File(directory, "settings-$kind-" + catalogFile(scope).name)
+    }
+    override suspend fun readSettings(scope: RuntimeScope, kind: String): JSONObject? = io {
+        if (!owns(scope)) return@io null
+        val data = load(settingsFile(scope, kind), 2L * 1024 * 1024) ?: return@io null
+        try {
+            require(data.getString("account") == scope.accountId && data.getString("workspace") == scope.workspaceId && data.getString("kind") == kind)
+            data.getJSONObject("value")
+        } catch (_: Exception) { AtomicFile(settingsFile(scope, kind)).delete(); null }
+    }
+    override suspend fun writeSettings(scope: RuntimeScope, kind: String, value: JSONObject) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        save(settingsFile(scope, kind), JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId).put("kind", kind).put("value", value), 2 * 1024 * 1024)
+    }
     override suspend fun readContext(): AccountContext? = io { context() }
+    private fun membersFile(scope: RuntimeScope) = File(directory, "members-" + catalogFile(scope).name)
+    override suspend fun readMembers(scope: RuntimeScope): List<WorkspaceMember>? = io {
+        if (!owns(scope)) return@io null
+        val data = load(membersFile(scope), 1024 * 1024) ?: return@io null
+        if (data.optString("account") != scope.accountId || data.optString("workspace") != scope.workspaceId) return@io null
+        data.getJSONArray("members").objects().map { WorkspaceMember(it.getString("id"), it.getString("name"), httpsImage(it.optString("image"))) }
+    }
+    override suspend fun writeMembers(scope: RuntimeScope, members: List<WorkspaceMember>) = io {
+        require(owns(scope)) { "cache_scope_changed" }
+        save(membersFile(scope), JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId)
+            .put("members", JSONArray(members.map { JSONObject().put("id", it.id).put("name", it.name).put("image", it.image) })), 1024 * 1024)
+        directory.listFiles()?.filter { it.name.startsWith("members-") && it.name.endsWith(".json") }
+            ?.sortedByDescending { it.lastModified() }?.drop(16)?.forEach { AtomicFile(it).delete() }
+        Unit
+    }
     override suspend fun saveAccount(account: Account) = io {
         val previous = context()
         if (previous != null && previous.account.id != account.id) directory.deleteRecursively()
         previous?.account?.workspaces?.filter { old -> account.id != previous.account.id || account.workspaces.none { it.id == old.id } }?.forEach {
             AtomicFile(catalogFile(RuntimeScope(previous.account.id, it.id))).delete()
+        }
+        directory.listFiles()?.filter { (it.name.startsWith("options-") || it.name.startsWith("branches-") || it.name.startsWith("members-") || it.name.startsWith("schedules-") || it.name.startsWith("runconfig-")) && it.name.endsWith(".json") }?.forEach { file ->
+            val cached = load(file)
+            if (cached == null || cached.optString("account") != account.id || account.workspaces.none { it.id == cached.optString("workspace") }) AtomicFile(file).delete()
         }
         saveContext(AccountContext(account, previous?.workspaceId?.takeIf { previous.account.id == account.id && account.workspaces.any { w -> w.id == it } }))
     }
@@ -77,9 +196,11 @@ internal class AtomicCatalogStore(context: Context, name: String = "catalog") : 
         try {
             require(data.getString("account") == scope.accountId && data.getString("workspace") == scope.workspaceId)
             SavedCatalog(CatalogSnapshot(data.getLong("revision"),
-                data.getJSONArray("projects").objects().map { CatalogProject(it.getString("id"), it.getString("machineId"), it.getString("name"), it.getString("rootPath")) },
-                data.getJSONArray("sessions").objects().map { CatalogSession(it.getString("id"), it.getString("machineId"), it.getString("projectId"), it.getString("title"), it.getString("status"), it.getBoolean("archived"), it.getBoolean("pinned"), it.getString("createdAt")) },
-                data.getJSONArray("machines").let { array -> (0 until array.length()).map { array.getString(it) } }), data.getLong("syncedAt"))
+                data.getJSONArray("projects").objects().map { CatalogJson.project(CatalogProject(it.getString("id"), it.getString("machineId"), it.getString("name"), it.getString("rootPath")), it) },
+                data.getJSONArray("sessions").objects().map { CatalogJson.session(CatalogSession(it.getString("id"), it.getString("machineId"), it.getString("projectId"), it.getString("title"), it.getString("status"), it.getBoolean("archived"), it.getBoolean("pinned"), it.getString("createdAt")), it) },
+                data.getJSONArray("machines").let { array -> (0 until array.length()).map { array.getString(it) } },
+                CatalogJson.machineNames(data), CatalogJson.machineOs(data),
+                machineSimulators = CatalogJson.machineSimulators(data), machineEmulators = CatalogJson.machineEmulators(data)), data.getLong("syncedAt"))
         } catch (_: Exception) { AtomicFile(file).delete(); null }
     }
     override suspend fun write(scope: RuntimeScope, catalog: SavedCatalog) = io {
@@ -87,12 +208,16 @@ internal class AtomicCatalogStore(context: Context, name: String = "catalog") : 
         val snapshot = catalog.snapshot
         val data = JSONObject().put("account", scope.accountId).put("workspace", scope.workspaceId)
             .put("revision", snapshot.revision).put("syncedAt", catalog.syncedAt).put("machines", JSONArray(snapshot.machineIds))
-            .put("projects", JSONArray(snapshot.projects.map { JSONObject().put("id", it.id).put("machineId", it.machineId).put("name", it.name).put("rootPath", it.rootPath) }))
-            .put("sessions", JSONArray(snapshot.sessions.map { JSONObject().put("id", it.id).put("machineId", it.machineId).put("projectId", it.projectId).put("title", it.title).put("status", it.status).put("archived", it.archived).put("pinned", it.pinned).put("createdAt", it.createdAt) }))
+            .put("machineNames", JSONObject(snapshot.machineNames))
+            .put("machineOs", JSONObject(snapshot.machineOs))
+            .put("machineSimulators", JSONObject(snapshot.machineSimulators))
+            .put("machineEmulators", JSONObject(snapshot.machineEmulators))
+            .put("projects", JSONArray(snapshot.projects.map { CatalogJson.putProject(JSONObject().put("id", it.id).put("machineId", it.machineId).put("name", it.name).put("rootPath", it.rootPath), it) }))
+            .put("sessions", JSONArray(snapshot.sessions.map { CatalogJson.putSession(JSONObject().put("id", it.id).put("machineId", it.machineId).put("projectId", it.projectId).put("title", it.title).put("status", it.status).put("archived", it.archived).put("pinned", it.pinned).put("createdAt", it.createdAt), it) }))
         val target = catalogFile(scope)
         save(target, data)
         // Bound disk use to eight recently updated workspace projections (<=64 MiB).
-        directory.listFiles()?.filter { it.name.endsWith(".json") && it != accountFile && it != target }
+        directory.listFiles()?.filter { it.name.endsWith(".json") && !it.name.startsWith("options-") && !it.name.startsWith("branches-") && !it.name.startsWith("members-") && !it.name.startsWith("schedules-") && it != accountFile && it != target }
             ?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { AtomicFile(it).delete() }
         Unit
     }
