@@ -455,6 +455,14 @@ object LodyIcons {
         )
     }
 
+    val Smartphone: ImageVector by lazy {
+        lodyIcon(
+            "Smartphone",
+            "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z",
+            "M12 18h.01",
+        )
+    }
+
     val Desktop: ImageVector by lazy {
         lodyIcon(
             "Desktop",
@@ -767,6 +775,7 @@ object LodyIcons {
             "sparkles" to Sparkles,
             "terminal" to Terminal,
             "machine" to Machine,
+            "smartphone" to Smartphone,
             "desktop" to Desktop,
             "server" to Server,
             "cloud" to Cloud,

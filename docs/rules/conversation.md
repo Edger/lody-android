@@ -63,7 +63,8 @@ Read before changing the conversation page: the transcript and its turns, compos
 
 
 - Conversation sync details are available from the header's More menu and
-  from the waiting or interruption banner. The session stream and Roost
-  owner history are separate receive paths. Retained turns remain visible
+  from the waiting or interruption banner. Icon nodes and two directional
+  arrows show each receive path. The session stream and Roost owner history
+  have separate diagrams and statuses. Retained turns remain visible
   while a path is unconfirmed; they show execution status as unconfirmed
   and pause the live indicator until the current subscription catches up.

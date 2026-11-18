@@ -994,7 +994,7 @@
     <string name="chat_sync_device">This device</string>
     <string name="chat_sync_server">Lody server</string>
     <string name="chat_sync_target">Target computer</string>
-    <string name="chat_sync_request">Read request · %1$s</string>
+    <string name="chat_sync_request">Read request</string>
     <string name="chat_sync_messages">Conversation messages</string>
     <string name="chat_sync_session_state">Conversation state</string>
     <string name="chat_sync_connecting">Connecting</string>
@@ -1013,5 +1013,5 @@
     <string name="chat_sync_metadata">Waiting for conversation metadata</string>
     <string name="chat_sync_stream_closed">The session stream closed</string>
     <string name="chat_sync_stalled_cursor">The stream did not advance</string>
-    <string name="chat_sync_return_route">Updates return · %1$s</string>
+    <string name="chat_sync_return_route">Updates return</string>
 </resources>
