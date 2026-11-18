@@ -144,7 +144,7 @@
     "files": [
       "src/runtime/mention-expansion.ts"
     ],
-    "note": "An @session:/@role: chip written straight after non-ASCII text (`让@role:<id>`) expands to its reference at send, so the transcript shows the Role's name instead of the legacy `Role` fallback. Mirrored verbatim from the iOS runtime source in the same change."
+    "note": "An @session:/@role: chip written straight after non-ASCII text (`\u8ba9@role:<id>`) expands to its reference at send, so the transcript shows the Role's name instead of the legacy `Role` fallback. Mirrored verbatim from the iOS runtime source in the same change."
   },
   "perModelConfigOptions": {
     "files": [
@@ -229,5 +229,13 @@
       "src/runtime/provider-settings.ts"
     ],
     "note": "Full-package export after the merged SDK upgrade. Includes per-window budgets, metadata-first publication, safe cost-based snapshot selection, cooperative frame imports, shared machine scans, two initialization slots and 16 ms publication coalescing. The upgraded SDK pins, uploadTimeoutMs: 15000, licenses and remaining canonical source are preserved."
+  },
+  "secureWebSocketCsp": {
+    "commit": "eb918daa0b8d2fc9591f5b3d794abe29b612b853",
+    "repository": "LodyAI/lody-ios",
+    "files": [
+      "scripts/build.mjs"
+    ],
+    "note": "Mirrors the iOS DataRuntime CSP template: permit wss: alongside https: while retaining all other directives. Dependencies and licenses are unchanged."
   }
 }
