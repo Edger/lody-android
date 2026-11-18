@@ -231,7 +231,7 @@
     "note": "Full-package export after the merged SDK upgrade. Includes per-window budgets, metadata-first publication, safe cost-based snapshot selection, cooperative frame imports, shared machine scans, two initialization slots and 16 ms publication coalescing. The upgraded SDK pins, uploadTimeoutMs: 15000, licenses and remaining canonical source are preserved."
   },
   "secureWebSocketCsp": {
-    "commit": "ff6376139b278a21cbd3ae46ed540e424159f770",
+    "commit": "eb918daa0b8d2fc9591f5b3d794abe29b612b853",
     "repository": "LodyAI/lody-ios",
     "files": [
       "scripts/build.mjs"
