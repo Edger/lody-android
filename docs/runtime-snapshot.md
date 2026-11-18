@@ -235,3 +235,8 @@ macrotasks between 12 ms slices; individual JSON/Wasm calls remain atomic.
 Two machine initialization slots leave metadata and live reads independent.
 Publication coalesces bursts over 16 ms using the current scope, and catalog and
 provider projections share one machine scan.
+
+The trusted NetworkRuntime permits only the validated grant HTTPS origin and its
+matching WSS origin. The offline runtime keeps `connect-src none`. The mirrored
+iOS DataRuntime template permits `https:` and `wss:` while retaining its other CSP
+directives. This permission does not enable the Streams WebSocket transport.
