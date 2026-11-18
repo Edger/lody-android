@@ -24,6 +24,33 @@ class RuntimeOwnerDeviceTest {
         val runtime = withContext(Dispatchers.Main) { WebViewRuntime(scope, WebViewCloudRuntime(instrumentation.targetContext, "DebugRuntime.html")) }
         try { runtime.start(); ready(runtime); block(runtime) } finally { runtime.stop() }
     }
+    @Test fun productionDocumentsInitializeWasmBeforeAcceptingCommands() = runBlocking {
+        for (document in listOf("DataRuntime.html", "NetworkRuntime.html")) {
+            val runtime = withContext(Dispatchers.Main) {
+                WebViewRuntime(scope, WebViewCloudRuntime(instrumentation.targetContext, document))
+            }
+            try {
+                runtime.start()
+                ready(runtime)
+                assertEquals(RuntimeResult.Pong(true), runtime.execute(RuntimeCommand.Ping))
+                assertEquals(emptySet<String>(), (runtime.execute(RuntimeCommand.InspectSchema) as RuntimeResult.Schema).machineIds)
+                assertEquals(0, runtime.state.value.automaticRestarts)
+                if (document == "NetworkRuntime.html") {
+                    assertTrue(runtime.state.value.capabilities.contains("agentProviderAuth"))
+                }
+            } finally { runtime.stop() }
+        }
+    }
+    @Test fun creationUsesTypedCommandsAcrossTheWebViewBridge() = runtimeTest { runtime ->
+        val options = (runtime.execute(RuntimeCommand.GetCreationOptions(null)) as RuntimeResult.Options).value
+        assertEquals("fixture-agent", options.agents.single().id)
+        val request = CreateRequest(java.util.UUID.randomUUID().toString(), java.util.UUID.randomUUID().toString(), null, "fixture-machine", "fixture-agent", "中文 😀", null, false, null, null, null)
+        val receipt = (runtime.execute(RuntimeCommand.CreateAndSend(request)) as RuntimeResult.Created).value
+        assertEquals(request.sessionId, receipt.sessionId)
+        assertEquals("accepted", receipt.state)
+        try { runtime.execute(RuntimeCommand.CreateAndSend(request)); fail("Creation must not replay") }
+        catch (_: RuntimeException) { }
+    }
     @Test fun cancellationReleasesPendingCapacityAndDoesNotStopRuntime() = runtimeTest { runtime ->
         val calls = List(30) { CoroutineScope(currentCoroutineContext()).launch { runtime.call("delay", JSONArray().put(20_000), CommandDeadline.QUERY) } }
         delay(250)
@@ -44,6 +71,14 @@ class RuntimeOwnerDeviceTest {
         val catalog = """{"projects":[],"sessions":[],"machineIds":["machine-fixture"]}"""
         runtime.call("event", JSONArray().put(JSONObject().put("type", "catalog").put("revision", 7).put("catalog", catalog)))
         assertEquals(RuntimeEvent.CatalogUpdated(CatalogSnapshot(7, emptyList(), emptyList(), listOf("machine-fixture"))), event.await().event)
+    }
+    @Test fun sessionProjectionCrossesTheActualWebViewBridge() = runtimeTest { runtime ->
+        val event = CoroutineScope(currentCoroutineContext()).async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5000) { runtime.events.first { it.event is RuntimeEvent.SessionUpdated } }
+        }
+        val body = """{"v":1,"status":"live","entries":[{"id":"u","role":"user","finished":true,"items":[{"type":"text","text":"中文 😀"}]}]}"""
+        runtime.call("event", JSONArray().put(JSONObject().put("type","session").put("sessionId","s").put("session",body)))
+        assertEquals(RuntimeEvent.SessionUpdated(SessionSnapshot("s","live",listOf(SessionMessage("u","user","中文 😀",false)))), event.await().event)
     }
     @Test fun saturatedQueriesCannotStarveTheHeartbeat() = runtimeTest { runtime ->
         val generation = runtime.state.value.generation

@@ -10,20 +10,36 @@ export function createReadAccess(fetch, emit=()=>{}) {
  }
  function allowed(request) {
   const url=new URL(request.url);
-  if(!config || !['GET','HEAD'].includes(request.method) || url.origin!==config.origin || url.username || url.password || url.hash || !url.pathname.startsWith(config.prefix)) return false;
+  if(!config || !['GET','HEAD','POST','PUT'].includes(request.method) || url.origin!==config.origin || url.username || url.password || url.hash || !url.pathname.startsWith(config.prefix)) return false;
   const parts=url.pathname.slice(config.prefix.length).split('/');
   if(parts.length>2 || (parts.length===2 && parts[1]!=='bootstrap')) return false;
   let stream;try{stream=decodeURIComponent(parts[0])}catch{return false}
-  return stream===config.workspace+':meta' || new RegExp('^'+config.workspace+':mf:[a-zA-Z0-9_-]{1,128}$').test(stream);
+  const read=['GET','HEAD'].includes(request.method);
+  if(parts.length===2 && !read)return false;
+  if(stream===config.workspace+':meta')return read || request.method==='POST';
+  if(new RegExp('^'+config.workspace+':mf:[a-zA-Z0-9_-]{1,128}$').test(stream))return read || request.method==='POST';
+  // Schedules: the Flock registry and one schedule's Loro doc are each created, read and appended.
+  // Agent Roles: the workspace Flock is read, created when missing and appended by Role edits.
+  if(stream===config.workspace+':wf:workspace')return read || ['PUT','POST'].includes(request.method);
+  // Prompt shortcuts: this workspace's index Flocks and body docs, under stream-specific tokens.
+  if(new RegExp('^shortcut-index:'+config.workspace+':[^:/]{1,600}:(private|workspace)$').test(stream))return read || ['PUT','POST'].includes(request.method);
+  if(/^shortcut-body:[^:/]{1,600}$/.test(stream))return read || ['PUT','POST'].includes(request.method);
+  if(stream===config.workspace+':sr')return true;
+  if(new RegExp('^'+config.workspace+':schedule:[a-zA-Z0-9_-]{1,128}$').test(stream))return true;
+  if(new RegExp('^'+config.workspace+':s:[a-zA-Z0-9_-]{1,128}$').test(stream))return true;
+  if(new RegExp('^'+config.workspace+':rpc:req:[a-zA-Z0-9_-]{1,128}$').test(stream))return request.method==='POST';
+  return new RegExp('^'+config.workspace+':rpc:res:[a-zA-Z0-9_-]{1,128}:[a-zA-Z0-9_-]{1,128}$').test(stream) && (read || request.method==='PUT');
  }
  function setActive(value) {
   active=value;
-  if(!active) for(const controller of requests) controller.abort();
+  // Distinguish host suspension from a transport AbortError after SDK wrapping.
+  if(!active) for(const controller of requests) controller.abort(new DOMException('runtime_suspended','AbortError'));
   else {for(const wake of [...waiters]) wake();}
  }
  async function guardedFetch(input, init) {
   const original=new Request(input,init);
   if(!allowed(original)) throw Error('network_denied');
+  if(!active && !['GET','HEAD'].includes(original.method))throw Error('inactive_write');
   if(!active) await new Promise((resolve,reject)=>{
    const cleanup=()=>{waiters.delete(wake);original.signal.removeEventListener('abort',abort)};
    const wake=()=>{cleanup();resolve()};const abort=()=>{cleanup();reject(Error('cancelled'))};
@@ -38,6 +54,13 @@ export function createReadAccess(fetch, emit=()=>{}) {
   try {
    const response=await fetch(request);
    if(response.status===401 || response.status===403)emit({type:'networkStatus',status:'authorization_required'});
+   // WebView may expose an empty stream for a null-body HTTP status.
+   // Re-wrapping it with a ReadableStream makes Response throw a TypeError.
+   if([204,205,304].includes(response.status)) {
+    requests.delete(controller);
+    await response.body?.cancel();
+    return new Response(null,{status:response.status,statusText:response.statusText,headers:response.headers});
+   }
    if(!response.body){requests.delete(controller);return response;}
    const reader=response.body.getReader();let bytes=0;
    const body=new ReadableStream({
@@ -50,7 +73,12 @@ export function createReadAccess(fetch, emit=()=>{}) {
     cancel(){requests.delete(controller);controller.abort();return reader.cancel();}
    });
    return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
-  } catch(error) {requests.delete(controller);emit({type:'networkStatus',status:'unavailable'});throw error;}
+  } catch(error) {
+   requests.delete(controller);
+   // Closing a session or suspending the app cancels its request, not the network.
+   if(!request.signal.aborted)emit({type:'networkStatus',status:'unavailable'});
+   throw error;
+  }
  }
  return {configure,setActive,fetch:guardedFetch};
 }

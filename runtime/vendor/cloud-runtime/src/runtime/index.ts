@@ -1,178 +1,92 @@
-import {
-  promptShortcuts,
-  shortcutAccess,
-  expandShortcuts,
-} from './prompt-shortcuts';
-import {
-  simpleShortcut,
-  type ShortcutRequest,
-} from '../models/prompt-shortcuts.ts';
-import { mentionCatalog, sessionMentions, commandMentions } from './mentions';
-import { createSharingRuntime } from './sharing/runtime.ts';
-import { readShareHistory } from './sharing/history.ts';
-import type {
-  ShareRequest,
-  PublishedSharesRequest,
-} from '../models/session-sharing.ts';
-import { expandMentions } from './mention-expansion';
-import { workspaceRoleMentions } from './agent-roles';
-import { roleSettings } from './role-settings';
-import { memorySettings } from './memory-settings';
-import type { MemoryRequest } from '../models/memory';
-import type { AgentRoleRequest } from '../models/agent-roles';
-import type {
-  MentionCatalog,
-  MentionSource,
-  MentionCategory,
-} from '../models/mentions';
-import { projectHistory } from './project-history';
-import type { HistoryRequest } from '../models/project-history.ts';
-import {
-  projectControl,
-  directoryResult,
-  registerProject,
-} from './local-projects';
-import {
-  creationOptions,
-  createSession,
-  type CreateSessionArgs,
-} from './create-session';
-import {
-  archiveSession,
-  deleteSession,
-  pinSession,
-  markSessionRead,
-  renameSession,
-} from './archive-session';
-import { releaseDeletedSessions, sessionDoc } from './session';
-import {
-  createPreview,
-  iosSimulatorControl,
-  previewTarget,
-  revokePreview,
-} from './preview';
-import { machineRpc } from './machine-rpc';
-import { remoteSettings } from './settings';
-import { sessionMcpSelection } from './mcp';
-import type { SettingsRequest } from '../models/settings.ts';
-import {
-  fileDiff,
-  workspaceChanges,
-  type FileContext,
-  listDir,
-  readFile,
-  turnDiff,
-} from './files';
+import { sessionQuotaProjection } from '../protocol/session-usage.ts';
 import { Flock } from '@loro-dev/flock-wasm/base64';
 import { StreamsClient } from '@loro-dev/streams-client';
 import { decompress } from 'fzstd';
-import type { Catalog, Project } from '../models/catalog.ts';
-import { projectRows } from '../protocol/catalog.ts';
+import type { Project } from '../models/catalog.ts';
+import { keepRepos, projectRows } from '../protocol/catalog.ts';
 import { mergeAgentQuotas } from '../protocol/agent-usage.ts';
 import {
-  openSession,
-  closeSession,
-  ensureSession,
-  releaseReserve,
-  retainedSessionIds,
   reservedSessionIds,
-  itemDetail,
-  respondPermission,
-  controlTurn,
-  sendTurn as sendSessionTurn,
-  checkTurnQuota,
-  editSession,
+  resumeAcceptedInputs,
+  retainedSessionIds,
+  setSessionTraceSink,
+  setSessionUsageReader,
+  refreshSessionUsage,
 } from './session';
-import { decodeFrames, encodeFrame } from '../frames';
+import { machineRpc } from './machine-rpc';
+import { retrySessionRead } from './session-read';
+import { providerRows } from './provider-settings';
+import { encodeFrame } from '../frames';
 import {
-  watchMachinePresence,
-  availableCreationOptions,
-} from './machine-presence';
-import { unknownPresence, type MachinePresence } from '../models/machines.ts';
-
-type Grant = {
-  token: string;
-  gatewayBaseUrl: string;
-  expiresIn: number;
-  shardHostSuffix?: string;
-};
+  catalogImportCheckpoint,
+  importCatalogUpdates,
+  readCatalogRefresh,
+  catalogBootstrapSlots,
+} from './catalog-sync';
+import { watchMachinePresence } from './machine-presence';
+import { unknownPresence } from '../models/machines.ts';
+import type {
+  Grant,
+  SessionRuntimeEvent,
+  ShareRequestParams,
+} from '../contract/methods.ts';
+import { ContractError, createChannel } from './channel.ts';
+import type { RuntimeContext, RuntimeState } from './handlers/context.ts';
+import { registerContent } from './handlers/content.ts';
+import { registerDebug } from './handlers/debug.ts';
+import { registerLifecycle } from './handlers/lifecycle.ts';
+import { registerMentions } from './handlers/mentions.ts';
+import { registerProjects } from './handlers/projects.ts';
+import { registerSessions } from './handlers/sessions.ts';
+import { registerSettings } from './handlers/settings.ts';
+import { registerSchedules } from './handlers/schedules.ts';
+import { registerProposals } from './handlers/proposals.ts';
+import { registerSharing } from './handlers/sharing.ts';
 const host = (globalThis as any).webkit.messageHandlers.dataRuntime;
 const send = (message: object) => host.postMessage(message);
-let grantResolve: ((grant: Grant) => void) | undefined;
-let grantReject: ((error: Error) => void) | undefined;
+const channel = createChannel(
+  (envelope) => send({ type: 'envelope', envelope }),
+  {
+    onDroppedKeys: (method, paths) =>
+      channel.emit('diagnostic', {
+        stage: `contract_dropped ${paths.join(' ')}`,
+        stream: method,
+      }),
+  },
+);
+setSessionTraceSink((event) => channel.emit('sessionTrace', event));
+function emitSession(event: SessionRuntimeEvent) {
+  if (event.type === 'session') {
+    const { type, ...payload } = event;
+    channel.emit(type, payload);
+  } else if (event.type === 'sessionCache') {
+    const { type, ...payload } = event;
+    channel.emit(type, payload);
+  } else {
+    const { type, ...payload } = event;
+    channel.emit(type, payload);
+  }
+}
+const publishSubscriptions = () =>
+  channel.emit('sessionSubscriptions', {
+    ids: retainedSessionIds(),
+    reserved: reservedSessionIds(),
+  });
 let grant: Grant | undefined,
   expiresAt = 0;
 let grantPending: Promise<Grant> | undefined;
-const shortcutReplies = new Map<
-  string,
-  (value: unknown, failed: boolean) => void
->();
-function shortcutCloud(
-  operation: string,
-  args: Record<string, unknown>,
-  workspaceId: string,
-): Promise<unknown> {
-  if (workspaceId !== workspace)
-    return Promise.reject(new Error('workspace_changed'));
-  const id = crypto.randomUUID();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      shortcutReplies.delete(id);
-      reject(new Error('shortcut_unavailable'));
-    }, 20000);
-    shortcutReplies.set(id, (value, failed) => {
-      clearTimeout(timer);
-      if (failed) reject(new Error('shortcut_unavailable'));
-      else resolve(value);
-    });
-    send({ type: 'shortcutCloud', id, workspaceId, operation, args });
-  });
-}
-function scopedShortcutCloud(workspaceId: string, userId: string) {
-  return async (operation: string, args: Record<string, unknown>) => {
-    const check = () => {
-      if (workspace !== workspaceId || runtimeUserId !== userId)
-        throw new Error('workspace_changed');
-    };
-    check();
-    const value = await shortcutCloud(operation, args, workspaceId);
-    check();
-    return value;
-  };
-}
-const githubReplies = new Map<string, (value: MentionCatalog | null) => void>();
-const githubPending = new Map<string, Promise<MentionCatalog>>();
-function githubMentions(repoFullName: string): Promise<MentionCatalog> {
-  const key = `${workspace}:${repoFullName}`;
-  const pending = githubPending.get(key);
-  if (pending) return pending;
-  const id = crypto.randomUUID();
-  const request = new Promise<MentionCatalog>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      githubReplies.delete(id);
-      reject(new Error('github_mentions_unavailable'));
-    }, 35000);
-    githubReplies.set(id, (value) => {
-      clearTimeout(timer);
-      if (value) resolve(value);
-      else reject(new Error('github_mentions_unavailable'));
-    });
-    send({ type: 'githubMentions', id, workspaceId: workspace, repoFullName });
-  }).finally(() => githubPending.delete(key));
-  githubPending.set(key, request);
-  return request;
-}
 async function getGrant() {
   if (grant && Date.now() < expiresAt) return grant;
-  if (!grantPending) {
-    grantPending = new Promise<Grant>((resolve, reject) => {
-      grantResolve = resolve;
-      grantReject = reject;
-      send({ type: 'grant' });
-    }).finally(() => {
+  grantPending ??= channel
+    .request('grant', {})
+    .then((value) => {
+      grant = value;
+      expiresAt = Date.now() + Math.max(1, value.expiresIn - 30) * 1000;
+      return value;
+    })
+    .finally(() => {
       grantPending = undefined;
     });
-  }
   return grantPending;
 }
 const delay = (ms: number, signal: AbortSignal) =>
@@ -191,25 +105,29 @@ const delay = (ms: number, signal: AbortSignal) =>
     }, ms);
     signal.addEventListener('abort', abort, { once: true });
   });
-let metaReplica: { flock: Flock; client: StreamsClient } | undefined;
-let workspace = '';
-let presence: MachinePresence = unknownPresence;
+const state: RuntimeState = {
+  workspace: '',
+  userId: '',
+  metaReplica: undefined,
+  presence: unknownPresence,
+  knownProjects: [],
+  machineReplicas: new Map(),
+  catalogs: new Map(),
+  unhealthy: new Set(),
+};
+const { machineReplicas, catalogs, unhealthy } = state;
 let stopPresence: (() => void) | undefined;
 function startPresence() {
   stopPresence?.();
-  stopPresence = watchMachinePresence(workspace, getGrant, (value) => {
-    presence = value;
-    send({ type: 'machinePresence', presence: JSON.stringify(value) });
+  stopPresence = watchMachinePresence(state.workspace, getGrant, (value) => {
+    state.presence = value;
+    channel.emit('machinePresence', value);
   });
 }
-const machineReplicas = new Map<string, Flock>();
-let creating = false;
-let registering = false;
-const browsers = new Map<string, AbortController>();
 
 async function markDispatch(sessionId: string, turnId: string, queued = false) {
-  if (!metaReplica) throw new Error('metadata_not_ready');
-  const { flock, client } = metaReplica;
+  if (!state.metaReplica) throw new Error('metadata_not_ready');
+  const { flock, client } = state.metaReplica;
   const version = flock.version();
   if (queued) {
     const key = ['m', `session-${sessionId}`, 'messageQueueUpdatedAt'];
@@ -241,61 +159,43 @@ async function markDispatch(sessionId: string, turnId: string, queued = false) {
   });
   if (!result.ok) throw new Error(result.result.code);
 }
-
 const watchers = new Map<string, AbortController>();
-const catalogs = new Map<string, Catalog>();
-const shareReplies = new Map<
-  string,
-  (value: unknown, failed: boolean) => void
->();
-const broker = (operation: string, args: object) =>
-  new Promise<unknown>((resolve, reject) => {
-    const id = crypto.randomUUID();
-    const timer = setTimeout(() => {
-      shareReplies.delete(id);
-      reject(new Error('share_request_timeout'));
-    }, 65000);
-    shareReplies.set(id, (value, failed) => {
-      clearTimeout(timer);
-      if (failed) reject(new Error('share_request_failed'));
-      else resolve(value);
-    });
-    send({
-      type: 'shareRequest',
-      workspaceId: workspace,
-      id,
+const broker = async (operation: string, args: object) => {
+  try {
+    const { value } = await channel.request('shareRequest', {
+      workspaceId: state.workspace,
       operation,
       args,
-    });
-  });
-const shareRuntime = createSharingRuntime({
-  sessions: () => catalogs.get('meta')?.sessions ?? [],
-  history: (id, signal) => readShareHistory(workspace, id, getGrant, signal),
-  progress: (progress) => send({ type: 'shareProgress', progress }),
-  broker,
-});
-const unhealthy = new Set<string>();
+    } as ShareRequestParams);
+    return value;
+  } catch (error) {
+    throw new Error(
+      error instanceof ContractError && error.code === 'timeout'
+        ? 'share_request_timeout'
+        : 'share_request_failed',
+    );
+  }
+};
 const gitRepos = new Map<string, string>();
 const gitStateAsked = new Set<string>();
 let gitStateQueue = Promise.resolve();
-let runtimeUserId = '';
 // ponytail: one ask per project per runtime; an offline machine keeps its last repo through the saved catalog until restart.
 function askGitState(project: Project) {
   const localProjectId = project.id.split(':local:')[1];
   if (
     project.repoFullName ||
     !localProjectId ||
-    !runtimeUserId ||
+    !state.userId ||
     gitStateAsked.has(project.id)
   )
     return;
   gitStateAsked.add(project.id);
   gitStateQueue = gitStateQueue.then(() =>
     machineRpc(
-      workspace,
+      state.workspace,
       project.machineId,
       'local-project/git-state',
-      { localProjectId, requestedByUserId: runtimeUserId },
+      { localProjectId, requestedByUserId: state.userId },
       getGrant,
       AbortSignal.timeout(20000),
     ).then(
@@ -318,9 +218,38 @@ function askGitState(project: Project) {
     ),
   );
 }
+setSessionUsageReader((sessionId, modelId) => {
+  const meta = catalogs.get('meta');
+  const session = meta?.sessions.find((s) => s.id === sessionId);
+  const machine =
+    session && catalogs.get(session.machineId)?.agentUsage?.[session.machineId];
+  return sessionQuotaProjection(
+    session,
+    session
+      ? {
+          configs: machine?.configs ?? [],
+          quotas: mergeAgentQuotas(
+            meta?.agentUsage?.[session.machineId]?.quotas ?? [],
+            machine?.quotas ?? [],
+          ),
+        }
+      : undefined,
+    modelId,
+  );
+});
+const acquireCatalogBootstrap = catalogBootstrapSlots(2);
 let revision = 0;
 let lastPublished = '';
+let publishTimer: ReturnType<typeof setTimeout> | undefined;
 function publish() {
+  if (publishTimer !== undefined) return;
+  // Read the current scope at flush time; never retain an old catalog payload.
+  publishTimer = setTimeout(() => {
+    publishTimer = undefined;
+    publishNow();
+  }, 16);
+}
+function publishNow() {
   const meta = catalogs.get('meta');
   if (!meta) return;
   const expected = new Set(['meta', ...meta.machineIds]);
@@ -334,72 +263,104 @@ function publish() {
     }
   for (const machine of meta.machineIds)
     if (!watchers.has(machine)) watch(machine);
-  if (unhealthy.size || meta.machineIds.some((id) => !catalogs.has(id))) return;
+  refreshSessionUsage();
+  channel.emit('creationOptionsChanged', {});
+  if (unhealthy.has('meta')) return;
   const projects = new Map(meta.projects.map((p) => [p.id, p]));
   for (const id of meta.machineIds)
-    for (const p of catalogs.get(id)!.projects)
+    for (const p of catalogs.get(id)?.projects ?? [])
       projects.set(p.id, { ...projects.get(p.id), ...p });
   for (const [id, p] of projects) {
     const repo = gitRepos.get(id);
     if (repo && !p.repoFullName) projects.set(id, { ...p, repoFullName: repo });
     else askGitState(p);
   }
-  const catalog = JSON.stringify({
-    ...meta,
-    agentUsage: Object.fromEntries(
-      meta.machineIds.map((id) => {
-        const usage = catalogs.get(id)?.agentUsage?.[id];
-        return [
-          id,
-          {
-            configs: usage?.configs ?? [],
-            quotas: mergeAgentQuotas(
-              meta.agentUsage?.[id]?.quotas ?? [],
-              usage?.quotas ?? [],
-            ),
-          },
-        ];
-      }),
-    ),
-    projects: [...projects.values()].sort((a, b) =>
-      a.name.localeCompare(b.name),
-    ),
-    sessions: [...meta.sessions].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt),
-    ),
-  });
+  const merged = keepRepos(
+    {
+      ...meta,
+      agentUsage: Object.fromEntries(
+        meta.machineIds.map((id) => {
+          const usage = catalogs.get(id)?.agentUsage?.[id];
+          return [
+            id,
+            {
+              configs: usage?.configs ?? [],
+              quotas: mergeAgentQuotas(
+                meta.agentUsage?.[id]?.quotas ?? [],
+                usage?.quotas ?? [],
+              ),
+            },
+          ];
+        }),
+      ),
+      projects: [...projects.values()].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
+      sessions: [...meta.sessions].sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      ),
+    },
+    { projects: state.knownProjects },
+  );
+  state.knownProjects = merged.projects;
+  const catalog = JSON.stringify(merged);
   if (catalog !== lastPublished) {
     lastPublished = catalog;
-    send({ type: 'catalog', catalog, revision: ++revision });
+    channel.emit('catalog', { catalog, revision: ++revision });
   }
-  send({ type: 'synced', revision, streams: watchers.size });
-}
-function apply(flock: Flock, bytes: Uint8Array) {
-  for (const frame of decodeFrames(bytes))
-    flock.importJson(JSON.parse(new TextDecoder().decode(frame)));
+  channel.emit('synced', { revision, streams: watchers.size });
 }
 function watch(mode: string) {
   const controller = new AbortController();
   watchers.set(mode, controller);
   const { signal } = controller;
+  const reportError = (
+    reason:
+      'catalog_limit' | 'stream_closed' | 'stalled_cursor' | 'network_or_auth',
+  ) => {
+    // Native hosts interpret syncError as workspace unavailability. A machine
+    // failure only removes that machine's readiness, not the meta directory.
+    if (mode === 'meta') channel.emit('syncError', { reason, stream: mode });
+    else
+      channel.emit('diagnostic', {
+        stage: `sync_error:${reason}`,
+        stream: mode,
+      });
+  };
   void (async () => {
     let failures = 0;
+    let providerSignature = '';
+    let preparedBootstrap: Awaited<ReturnType<typeof readCatalogRefresh>>;
     while (!signal.aborted) {
+      let caughtUp = false;
+      let releaseBootstrap = () => {};
       try {
         const authorization = await getGrant();
         if (signal.aborted) return;
         const stream =
-          mode === 'meta' ? `${workspace}:meta` : `${workspace}:mf:${mode}`;
+          mode === 'meta'
+            ? `${state.workspace}:meta`
+            : `${state.workspace}:mf:${mode}`;
         const client = new StreamsClient({
           url: `${authorization.gatewayBaseUrl.replace(/\/$/, '')}/ds/lody/${encodeURIComponent(stream)}`,
           auth: async () => (await getGrant()).token,
           retry: { maxAttempts: 1 },
-          timeout: { connectTimeoutMs: 15000, pollTimeoutMs: 35000 },
+          // Keep writes within the native command budget; SDK 0.12+ defaults uploads to 60s.
+          timeout: {
+            connectTimeoutMs: 15000,
+            uploadTimeoutMs: 15000,
+            pollTimeoutMs: 35000,
+          },
         });
-        send({ type: 'diagnostic', stage: 'bootstrap', stream: mode });
-        const initial = await client.bootstrap({ signal });
-        send({
-          type: 'diagnostic',
+        if (mode !== 'meta')
+          releaseBootstrap = await acquireCatalogBootstrap(signal);
+        const checkpoint = catalogImportCheckpoint(signal);
+        channel.emit('diagnostic', { stage: 'bootstrap', stream: mode });
+        const initial = preparedBootstrap
+          ? { ok: true as const, result: preparedBootstrap }
+          : await client.bootstrap({ signal });
+        preparedBootstrap = undefined;
+        channel.emit('diagnostic', {
           stage: initial.ok ? 'bootstrap_ok' : initial.result.code,
           stream: mode,
         });
@@ -408,6 +369,7 @@ function watch(mode: string) {
             unhealthy.delete(mode);
             catalogs.set(mode, { projects: [], sessions: [], machineIds: [] });
             publish();
+            releaseBootstrap();
             await delay(30000, signal);
             continue;
           }
@@ -415,11 +377,13 @@ function watch(mode: string) {
         }
         const flock = new Flock(`lody-ios-${crypto.randomUUID()}`);
         const data = initial.result;
+        const snapshotBytes = data.snapshot?.body.length ?? 0;
         let size = 0;
         if (data.snapshotOffset !== '-1' && data.snapshot) {
           const bytes = data.snapshot.body;
           size += bytes.length;
-          if (size > 8 * 1024 * 1024) throw new Error('catalog_limit');
+          if (size > 16 * 1024 * 1024) throw new Error('catalog_limit');
+          await checkpoint(true);
           flock.importFile(
             bytes[0] === 0x28 &&
               bytes[1] === 0xb5 &&
@@ -429,38 +393,122 @@ function watch(mode: string) {
               : bytes,
           );
         }
+        await checkpoint();
         for (const part of data.updates) {
           size += part.body.length;
-          if (size > 8 * 1024 * 1024) throw new Error('catalog_limit');
-          apply(flock, part.body);
+          if (size > 16 * 1024 * 1024) throw new Error('catalog_limit');
+          await importCatalogUpdates(flock, part.body, checkpoint);
         }
         let offset = data.nextOffset,
           cursor = data.cursor,
           upToDate = data.upToDate;
         let pages = 0;
+        let checkedWindow = false;
         while (!signal.aborted) {
           if (upToDate) {
-            if (mode === 'meta') metaReplica = { flock, client };
-            else machineReplicas.set(mode, flock);
+            caughtUp = true;
+            if (mode === 'meta') {
+              const first = !state.metaReplica;
+              // Keep the replica's identity across polls: in-flight calls
+              // compare it to detect a reconnect, not a routine update.
+              if (state.metaReplica?.flock !== flock)
+                state.metaReplica = { flock, client };
+              if (first) resumeAcceptedInputs();
+            } else machineReplicas.set(mode, flock);
             unhealthy.delete(mode);
-            catalogs.set(mode, projectRows(flock.scan(), mode));
+            await checkpoint();
+            const rows = flock.scan();
+            catalogs.set(mode, projectRows(rows, mode));
+            if (mode !== 'meta') {
+              const nextSignature = JSON.stringify(
+                providerRows(flock, mode, false, rows),
+              );
+              if (nextSignature !== providerSignature) {
+                providerSignature = nextSignature;
+                channel.emit('agentProvidersChanged', { machineId: mode });
+              }
+            }
+            releaseBootstrap();
             publish();
+            checkedWindow = false;
             failures = 0;
             pages = 0;
+            // Bootstrap includes its snapshot. Each later live/catch-up window
+            // gets a fresh budget, retained across transient read retries.
+            size = 0;
           }
-          const response = await client.readOnce({
-            offset,
-            cursor,
+          // A failed read has not imported bytes or advanced the cursor. Keep
+          // that verified replica through transport loss and host suspension.
+          // Protocol/cursor failures still leave this loop for a fresh bootstrap.
+          const response = await retrySessionRead(
             signal,
-            ...(upToDate ? { live: 'long-poll' as const } : {}),
-          });
+            async () => {
+              const result = await client.readOnce({
+                offset,
+                cursor,
+                signal,
+                ...(upToDate ? { live: 'long-poll' as const } : {}),
+              });
+              if (!result.ok) {
+                const error = result.result;
+                const aborted =
+                  error.code === 'unknown' &&
+                  (error.cause instanceof Error ||
+                    error.cause instanceof DOMException) &&
+                  error.cause.name === 'AbortError';
+                const suspended =
+                  aborted && error.cause.message === 'runtime_suspended';
+                if (
+                  [
+                    'network_error',
+                    'timeout',
+                    'unauthorized',
+                    'forbidden',
+                    'rate_limited',
+                  ].includes(error.code) ||
+                  aborted ||
+                  (error.code === 'unknown' && (error.status ?? 0) >= 500)
+                )
+                  throw new Error(suspended ? 'runtime_suspended' : error.code);
+              }
+              return result;
+            },
+            (error) => {
+              unhealthy.add(mode);
+              channel.emit('creationOptionsChanged', {});
+              reportError('network_or_auth');
+              if (!(
+                error instanceof Error && error.message === 'runtime_suspended'
+              ))
+                grant = undefined;
+            },
+          );
           if (!response.ok) throw new Error(response.result.code);
           const next = response.result;
           if (signal.aborted) return;
+          if (
+            caughtUp &&
+            !checkedWindow &&
+            (!next.upToDate || (next.payload?.body.length ?? 0) >= 256 * 1024)
+          ) {
+            checkedWindow = true;
+            const refreshed = await readCatalogRefresh(
+              client,
+              offset,
+              snapshotBytes,
+              16 * 1024 * 1024,
+              signal,
+            );
+            if (refreshed) {
+              preparedBootstrap = refreshed;
+              throw new Error('catalog_rebootstrap');
+            }
+          }
+          if (next.payload?.body.length || !next.upToDate) unhealthy.add(mode);
           if (next.payload) {
             size += next.payload.body.length;
-            if (size > 8 * 1024 * 1024) throw new Error('catalog_limit');
-            apply(flock, next.payload.body);
+            if (size > 16 * 1024 * 1024) throw new Error('catalog_limit');
+            await importCatalogUpdates(flock, next.payload.body, checkpoint);
           }
           if (next.nextOffset === offset && !next.upToDate)
             throw new Error('stalled_cursor');
@@ -473,20 +521,30 @@ function watch(mode: string) {
           if (!next.payload?.body.length && upToDate) await delay(1000, signal);
         }
       } catch (error) {
+        releaseBootstrap();
         if (signal.aborted) return;
-        if (mode === 'meta') metaReplica = undefined;
+        if (mode === 'meta') state.metaReplica = undefined;
         else machineReplicas.delete(mode);
         unhealthy.add(mode);
+        channel.emit('creationOptionsChanged', {});
         const reason = error instanceof Error ? error.message : 'sync_failed';
-        send({
-          type: 'syncError',
-          reason: ['catalog_limit', 'stream_closed', 'stalled_cursor'].includes(
-            reason,
-          )
-            ? reason
-            : 'network_or_auth',
-          stream: mode,
-        });
+        if (
+          reason === 'catalog_rebootstrap' ||
+          (reason === 'catalog_limit' && caughtUp)
+        ) {
+          // An old replica can have an arbitrarily long backlog. Discard it
+          // and try the server's compacted snapshot before declaring a limit.
+          channel.emit('diagnostic', {
+            stage: 'catalog_rebootstrap',
+            stream: mode,
+          });
+          continue;
+        }
+        reportError(
+          (['catalog_limit', 'stream_closed', 'stalled_cursor'] as const).find(
+            (known) => known === reason,
+          ) ?? 'network_or_auth',
+        );
         grant = undefined;
         if (reason === 'catalog_limit') return;
         try {
@@ -497,823 +555,42 @@ function watch(mode: string) {
         } catch {
           return;
         }
+      } finally {
+        releaseBootstrap();
       }
     }
   })();
 }
-function machineFor(
-  sessionId: string,
-  path: string,
-): FileContext & { localProjectId?: string } {
-  if (!metaReplica || unhealthy.size) throw new Error('metadata_not_ready');
-  if (typeof path !== 'string' || path.length > 32768 || path.includes('\0'))
-    throw new Error('invalid_path');
-  const session = catalogs
-    .get('meta')
-    ?.sessions.find((item) => item.id === sessionId);
-  if (!session || !machineReplicas.has(session.machineId))
-    throw new Error('machine_unavailable');
-  const localPrefix = `${session.machineId}:local:`;
-  return {
-    workspaceId: workspace,
-    machineId: session.machineId,
-    // Code Collab ownership lives in workspace Meta Flock, not the session doc.
-    ownerSessionId: session.parentSessionId ?? session.id,
-    localProjectId: session.projectId.startsWith(localPrefix)
-      ? session.projectId.slice(localPrefix.length)
-      : undefined,
-    getGrant,
-    signal: AbortSignal.timeout(35000),
-  };
-}
-function previewControl(sessionId: string, userId: string) {
-  const { workspaceId, machineId, getGrant } = machineFor(sessionId, '/');
-  return {
-    workspaceId,
-    machineId,
-    sessionId,
-    userId,
-    rpc: (method: string, params: object, timeoutMs: number) =>
-      machineRpc(
-        workspaceId,
-        machineId,
-        method,
-        params,
-        getGrant,
-        AbortSignal.timeout(timeoutMs),
-      ),
-    mintToken: (intent: object) =>
-      broker('previewToken', { intent }).catch(() => undefined),
-  };
-}
-async function getMentions(
-  args: MentionSource & { category: MentionCategory; userId: string },
-) {
-  if (args.workspaceId !== workspace || !metaReplica || unhealthy.size)
-    throw new Error('metadata_not_ready');
-  if (args.category === 'role') {
-    const sourceWorkspace = workspace,
-      sourceUserId = runtimeUserId;
-    if (args.userId !== sourceUserId) throw new Error('workspace_changed');
-    const check = () => {
-      if (workspace !== sourceWorkspace || runtimeUserId !== sourceUserId)
-        throw new Error('workspace_changed');
-    };
-    const result = await workspaceRoleMentions(
-      sourceWorkspace,
-      args.userId,
-      machineReplicas,
-      async () => {
-        check();
-        const value = await getGrant();
-        check();
-        return value;
-      },
-      () => presence,
-    );
-    check();
-    return result;
-  }
-  if (args.category === 'session')
-    return sessionMentions(
-      catalogs.get('meta')?.sessions ?? [],
-      [...catalogs.values()].flatMap((value) => value.projects),
-      args.sessionId,
-    );
-  const session = args.sessionId
-    ? catalogs.get('meta')?.sessions.find((item) => item.id === args.sessionId)
-    : undefined;
-  if (args.sessionId && !session) throw new Error('session_unavailable');
-  const projectId = session?.projectId ?? args.projectId;
-  const project = [...catalogs.values()]
-    .flatMap((value) => value.projects)
-    .find((item) => item.id === projectId);
-  if (args.projectId && !project) throw new Error('project_unavailable');
-  const machineId =
-    session?.machineId ??
-    (projectId?.startsWith('github:') ? args.machineId : project?.machineId) ??
-    args.machineId;
-  if (!machineId || !machineReplicas.has(machineId))
-    throw new Error('machine_unavailable');
-  const prefix = `${machineId}:local:`;
-  const localProjectId = projectId?.startsWith(prefix)
-    ? projectId.slice(prefix.length)
-    : undefined;
-  if (
-    localProjectId &&
-    machineReplicas
-      .get(machineId)
-      ?.get(['cmd', 'deleteLocalProject', localProjectId]) !== undefined
-  )
-    throw new Error('project_unavailable');
-  if (args.category === 'issue' || args.category === 'pr') {
-    if (!projectId?.startsWith('github:'))
-      return { items: [], truncated: false, incomplete: false };
-    const result = await githubMentions(projectId.slice(7));
-    return {
-      ...result,
-      items: result.items.filter((item) => item.kind === args.category),
-    };
-  }
-  if (args.category === 'cmd') {
-    const sourceWorkspace = workspace;
-    const access = shortcutAccess(
-      workspace,
-      runtimeUserId,
-      scopedShortcutCloud(sourceWorkspace, runtimeUserId),
-      AbortSignal.timeout(30000),
-    );
-    const shortcuts = (await access.list().catch(() => []))
-      .filter(simpleShortcut)
-      .map((entry) => ({
-        path: entry.id,
-        name: `/shortcut:${entry.slug}`,
-        kind: 'cmd' as const,
-        subtitle: entry.name,
-        insertText: `/shortcut:${entry.slug}`,
-      }));
-    const currentMeta = metaReplica;
-    if (!currentMeta || workspace !== sourceWorkspace || unhealthy.size)
-      throw new Error('metadata_not_ready');
-    const commands = () => {
-      const metadata = session
-        ? (currentMeta.flock.get(['m', `session-${session.id}`]) as
-            Record<string, unknown> | undefined)
-        : undefined;
-      const configId = session
-        ? (currentMeta.flock.get([
-            'm',
-            `session-${session.id}`,
-            'agentConfigId',
-          ]) ?? metadata?.agentConfigId)
-        : args.agentConfigId;
-      if (typeof configId !== 'string') return commandMentions([]);
-      const capability = machineReplicas
-        .get(machineId)
-        ?.get(['acpCapability', configId]) as
-        Record<string, unknown> | undefined;
-      if (
-        !capability ||
-        capability.cliType !== (args.cliType ?? session?.cliType) ||
-        capability.agentType !== (args.agentType ?? session?.agentType)
-      )
-        return commandMentions([]);
-      return commandMentions(capability.availableCommands);
-    };
-    const result = commands();
-    const names = new Set(result.items.map((item) => item.insertText));
-    return {
-      ...result,
-      items: [
-        ...result.items,
-        ...shortcuts.filter((item) => !names.has(item.insertText)),
-      ],
-    };
-  }
-  return mentionCatalog(
-    {
-      workspaceId: workspace,
-      machineId,
-      localProjectId,
-      repoFullName: projectId?.startsWith('github:')
-        ? projectId.slice('github:'.length)
-        : undefined,
-      sessionId: session?.id,
-      getGrant,
-      signal: AbortSignal.timeout(35000),
-    },
-    args.category,
-    args.userId,
-  );
-}
+const ctx: RuntimeContext = {
+  channel,
+  state,
+  getGrant,
+  broker,
+  publish,
+  publishSubscriptions,
+  emitSession,
+  markDispatch,
+  watch,
+  startPresence,
+  stopPresence: () => {
+    stopPresence?.();
+    stopPresence = undefined;
+  },
+};
+registerLifecycle(ctx);
+registerSettings(ctx);
+const getMentions = registerMentions(ctx);
+registerProjects(ctx);
+registerSchedules(ctx);
+registerProposals(ctx);
+registerSharing(ctx);
+registerContent(ctx);
+registerSessions(ctx, getMentions);
+registerDebug(ctx);
 Object.assign(globalThis, {
   dataRuntime: {
-    async publishedShares(args: PublishedSharesRequest & { userId: string }) {
-      const current = workspace,
-        user = runtimeUserId;
-      const check = () => {
-        if (
-          current !== workspace ||
-          args.workspaceId !== workspace ||
-          user !== runtimeUserId ||
-          args.userId !== user
-        )
-          throw new Error('shares_scope_changed');
-      };
-      check();
-      const result = await broker('management', args);
-      check();
-      return result;
-    },
-    sessionSharing(args: ShareRequest) {
-      if (args.workspaceId !== workspace)
-        throw new Error('share_workspace_changed');
-      return shareRuntime(args);
-    },
-    async sessionPreview(args: {
-      sessionId: string;
-      userId: string;
-      action?: 'create' | 'revoke';
-    }) {
-      const doc = sessionDoc(args.sessionId);
-      const target = doc && previewTarget(doc);
-      if (!target) return { error: 'unavailable' };
-      const control = previewControl(args.sessionId, args.userId);
-      return args.action === 'revoke'
-        ? revokePreview(control)
-        : createPreview({ ...control, target });
-    },
-    async iosSimulatorControl(args: {
-      workspaceId: string;
-      sessionId: string;
-      userId: string;
-      command: { action: string };
-    }) {
-      if (args.workspaceId !== workspace) throw new Error('metadata_not_ready');
-      const control = previewControl(args.sessionId, args.userId);
-      const room = `machine-${control.machineId}`;
-      const capabilities = (metaReplica!.flock.get([
-        'm',
-        room,
-        'protocolCapabilities',
-      ]) ??
-        (metaReplica!.flock.get(['m', room]) as Record<string, unknown>)
-          ?.protocolCapabilities) as Record<string, number> | undefined;
-      // Older CLIs drop unknown methods without replying.
-      if (!((capabilities?.iosSimulator ?? 0) >= 1))
-        return { error: 'unsupported', capabilities };
-      return iosSimulatorControl({ ...control, command: args.command });
-    },
-    shareResult(id: string, value: unknown, failed: boolean) {
-      const reply = shareReplies.get(id);
-      shareReplies.delete(id);
-      reply?.(value, failed);
-    },
-    ping: () => true,
-    shortcutCloudResult(id: string, value: unknown, failed: boolean) {
-      shortcutReplies.get(id)?.(value, failed);
-      shortcutReplies.delete(id);
-    },
-    async promptShortcuts(args: ShortcutRequest & { userId: string }) {
-      if (args.workspaceId !== workspace || args.userId !== runtimeUserId)
-        throw new Error('workspace_changed');
-      return promptShortcuts(
-        args,
-        args.userId,
-        scopedShortcutCloud(args.workspaceId, args.userId),
-        AbortSignal.timeout(120000),
-      );
-    },
-    githubMentionsResult(id: string, value: MentionCatalog | null) {
-      const reply = githubReplies.get(id);
-      githubReplies.delete(id);
-      reply?.(value);
-    },
-    async remoteSettings(args: SettingsRequest & { userId: string }) {
-      if (args.workspaceId !== workspace || !metaReplica || unhealthy.size)
-        throw new Error('metadata_not_ready');
-      const scopedGrant = async () => {
-        const check = () => {
-          if (args.workspaceId !== workspace || args.userId !== runtimeUserId)
-            throw new Error('workspace_changed');
-        };
-        check();
-        const value = await getGrant();
-        check();
-        return value;
-      };
-      return remoteSettings(
-        args,
-        args.userId,
-        scopedGrant,
-        AbortSignal.timeout(35000),
-      );
-    },
-    async memorySettings(args: MemoryRequest & { userId: string }) {
-      const replica = metaReplica;
-      const check = () => {
-        if (
-          args.workspaceId !== workspace ||
-          args.userId !== runtimeUserId ||
-          !replica ||
-          metaReplica !== replica ||
-          unhealthy.size
-        )
-          throw new Error('workspace_changed');
-      };
-      check();
-      return memorySettings(
-        args,
-        args.userId,
-        replica!.flock,
-        machineReplicas,
-        () => presence,
-        async () => {
-          check();
-          const value = await getGrant();
-          check();
-          return value;
-        },
-        AbortSignal.timeout(35000),
-        check,
-      );
-    },
-    async agentRoles(args: AgentRoleRequest & { userId: string }) {
-      const replica = metaReplica;
-      const check = () => {
-        if (
-          args.workspaceId !== workspace ||
-          args.userId !== runtimeUserId ||
-          !replica ||
-          metaReplica !== replica ||
-          unhealthy.size
-        )
-          throw new Error('workspace_changed');
-      };
-      check();
-      return roleSettings(
-        args,
-        args.userId,
-        replica!.flock,
-        machineReplicas,
-        async () => {
-          check();
-          const value = await getGrant();
-          check();
-          return value;
-        },
-        AbortSignal.timeout(35000),
-        check,
-      );
-    },
-    /**
-     * Development probe: reports the shape of the machine replicas so the client
-     * can find out whether model choices exist in the data at all. Names only —
-     * values may carry launch environment and secrets and must never leave the
-     * WebView.
-     */
-    probeSchema() {
-      // Development probe. `acpCapability` is a published capability catalog —
-      // model and mode names are exactly what the picker must show, so its
-      // values are safe to report. `agentConfig.env` carries launch secrets and
-      // never leaves the WebView; only its field names are reported.
-      const names = (value: unknown): string[] =>
-        value && typeof value === 'object' && !Array.isArray(value)
-          ? Object.keys(value as Record<string, unknown>).sort()
-          : [];
-      const report: Record<string, unknown> = {};
-      // Run the real projection here so its exception text survives; a JS throw
-      // reaches Swift as a generic WKError with no message.
-      const trials: Record<string, string> = {};
-      for (const catalog of catalogs.values())
-        for (const project of catalog.projects) {
-          if (trials[project.id]) continue;
-          try {
-            const value = creationOptions(
-              project.id,
-              metaReplica!.flock,
-              machineReplicas,
-            );
-            trials[project.id] =
-              `ok agents=${value.agents.length} capabilities=${value.capabilities.length}`;
-          } catch (error) {
-            trials[project.id] = `THREW ${String(
-              error,
-            )} | ${(error as Error)?.stack ?? ''}`.slice(0, 400);
-          }
-        }
-      report.creationOptionsTrial = trials;
-      for (const [machineId, flock] of machineReplicas) {
-        const capabilities: unknown[] = [];
-        const otherKeys = new Set<string>();
-        for (const row of flock.scan()) {
-          const kind = String(row.key[0]);
-          if (kind !== 'acpCapability') {
-            otherKeys.add(kind);
-            continue;
-          }
-          const value = (row.value ?? {}) as Record<string, unknown>;
-          capabilities.push({
-            key: row.key.map(String),
-            cliType: value.cliType,
-            agentType: value.agentType,
-            models: value.models,
-            modes: value.modes,
-            modelReasoningEfforts: value.modelReasoningEfforts,
-            configOptionFields: names(value.configOptions),
-          });
-        }
-        report[machineId] = { otherKeys: [...otherKeys].sort(), capabilities };
-      }
-      return report;
-    },
-    async localProjects(args: {
-      workspaceId: string;
-      browserId: string;
-      action: string;
-      userId: string;
-      history?: HistoryRequest;
-      machineId?: string;
-      path?: string;
-      cursor?: string;
-    }) {
-      if (args.workspaceId !== workspace || !args.browserId)
-        throw new Error('metadata_not_ready');
-      if (args.action === 'cancel') {
-        browsers.get(args.browserId)?.abort();
-        browsers.delete(args.browserId);
-        return {};
-      }
-      if (!metaReplica || unhealthy.size) throw new Error('metadata_not_ready');
-      if (args.action === 'history' && args.history) {
-        let controller = browsers.get(args.browserId);
-        if (!controller) {
-          controller = new AbortController();
-          browsers.set(args.browserId, controller);
-        }
-        return projectHistory(
-          args.history,
-          workspace,
-          args.userId,
-          metaReplica.flock,
-          machineReplicas,
-          getGrant,
-          AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]),
-        );
-      }
-      if (args.action === 'machines') {
-        return {
-          machines: (catalogs.get('meta')?.machineIds ?? []).map((id) => {
-            const meta = metaReplica!.flock;
-            const value = meta.get(['m', `machine-${id}`]) as
-              Record<string, unknown> | undefined;
-            const name =
-              meta.get(['m', `machine-${id}`, 'name']) ?? value?.name;
-            return {
-              id,
-              name: typeof name === 'string' && name ? name : '未命名电脑',
-            };
-          }),
-        };
-      }
-      const machineId = args.machineId;
-      if (
-        !machineId ||
-        !machineReplicas.has(machineId) ||
-        !['browse', 'add'].includes(args.action)
-      )
-        throw new Error('machine_unavailable');
-      if (
-        args.path !== undefined &&
-        (typeof args.path !== 'string' ||
-          args.path.length > 32768 ||
-          args.path.includes('\0'))
-      )
-        throw new Error('invalid_path');
-      let controller = browsers.get(args.browserId);
-      if (!controller) {
-        controller = new AbortController();
-        browsers.set(args.browserId, controller);
-      }
-      const signal = AbortSignal.any([
-        controller.signal,
-        AbortSignal.timeout(35000),
-      ]);
-      const flock = machineReplicas.get(machineId)!;
-      if (args.action === 'browse')
-        return directoryResult(
-          await projectControl(
-            workspace,
-            machineId,
-            {
-              type: 'local-project/browse-dir',
-              absolutePath: args.path,
-              cursor: args.cursor,
-              limit: 100,
-            },
-            getGrant,
-            signal,
-          ),
-        );
-      if (registering || !args.path) throw new Error('project_not_ready');
-      registering = true;
-      try {
-        const prepared = await projectControl(
-          workspace,
-          machineId,
-          { type: 'local-project/prepare-add', rootPath: args.path },
-          getGrant,
-          signal,
-        );
-        signal.throwIfAborted();
-        if (machineReplicas.get(machineId) !== flock)
-          throw new Error('metadata_not_ready');
-        const result = await registerProject(
-          workspace,
-          machineId,
-          prepared,
-          flock,
-          getGrant,
-          signal,
-        );
-        if (machineReplicas.get(machineId) === flock) {
-          catalogs.set(machineId, projectRows(flock.scan(), machineId));
-          publish();
-        }
-        return result;
-      } finally {
-        registering = false;
-      }
-    },
-    turnDiff(args: { sessionId: string; entryId: string; path: string }) {
-      return turnDiff(machineFor(args.sessionId, args.path), args);
-    },
-    workspaceChanges(args: { sessionId: string }) {
-      return workspaceChanges(machineFor(args.sessionId, '/'), args);
-    },
-    fileDiff(args: { sessionId: string; path: string }) {
-      return fileDiff(machineFor(args.sessionId, args.path), args);
-    },
-    readFile(args: { sessionId: string; path: string }) {
-      return readFile(machineFor(args.sessionId, args.path), args);
-    },
-    mentionCatalog: getMentions,
-    listDir(args: {
-      workspaceId: string;
-      sessionId: string;
-      relativePath: string;
-      userId: string;
-    }) {
-      if (args.workspaceId !== workspace) throw new Error('metadata_not_ready');
-      const ctx = machineFor(args.sessionId, args.relativePath);
-      if (!ctx.localProjectId) throw new Error('project_unavailable');
-      return listDir(ctx, {
-        localProjectId: ctx.localProjectId,
-        relativePath: args.relativePath,
-        userId: args.userId,
-      });
-    },
-    creationOptions(args: { workspaceId: string; projectId?: string }) {
-      if (args.workspaceId !== workspace || !metaReplica || unhealthy.size)
-        throw new Error('metadata_not_ready');
-      const options = creationOptions(
-        args.projectId,
-        metaReplica.flock,
-        machineReplicas,
-      );
-      return availableCreationOptions(options, presence);
-    },
-    async createSession(args: CreateSessionArgs) {
-      if (
-        creating ||
-        args.workspaceId !== workspace ||
-        !metaReplica ||
-        unhealthy.size
-      )
-        return { state: 'rejected' };
-      const replica = metaReplica;
-      creating = true;
-      try {
-        const options = creationOptions(
-          args.projectId,
-          replica.flock,
-          machineReplicas,
-        );
-        const result = await createSession(args, options, replica, getGrant);
-        if (result.state === 'created' && metaReplica === replica) {
-          catalogs.set('meta', projectRows(replica.flock.scan(), 'meta'));
-          publish();
-        }
-        return result;
-      } catch (error) {
-        return {
-          state:
-            error instanceof Error && error.message === 'session_already_exists'
-              ? 'unknown'
-              : 'rejected',
-        };
-      } finally {
-        creating = false;
-      }
-    },
-    async deleteSession(args: {
-      workspaceId: string;
-      sessionId: string;
-      sessionIds: string[];
-    }) {
-      if (args.workspaceId !== workspace || !metaReplica || unhealthy.size)
-        throw new Error('metadata_not_ready');
-      const replica = metaReplica;
-      const sessionIds = await deleteSession(args, replica);
-      if (metaReplica === replica) {
-        releaseDeletedSessions(sessionIds);
-        catalogs.set('meta', projectRows(replica.flock.scan(), 'meta'));
-        publish();
-      }
-      return { sessionIds };
-    },
-    async archiveSession(args: {
-      workspaceId: string;
-      sessionId: string;
-      archived: boolean;
-    }) {
-      if (args.workspaceId !== workspace || !metaReplica)
-        throw new Error('metadata_not_ready');
-      const replica = metaReplica;
-      await archiveSession(args, replica, machineReplicas, getGrant);
-      if (metaReplica === replica) {
-        catalogs.set('meta', projectRows(replica.flock.scan(), 'meta'));
-        publish();
-      }
-      return {};
-    },
-    async pinSession(args: {
-      workspaceId: string;
-      sessionId: string;
-      pinned: boolean;
-    }) {
-      if (args.workspaceId !== workspace || !metaReplica)
-        throw new Error('metadata_not_ready');
-      const replica = metaReplica;
-      await pinSession(args, replica);
-      if (metaReplica === replica) {
-        catalogs.set('meta', projectRows(replica.flock.scan(), 'meta'));
-        publish();
-      }
-      return {};
-    },
-    async markSessionRead(args: {
-      workspaceId: string;
-      sessionId: string;
-      lastReadAt: number;
-    }) {
-      if (args.workspaceId !== workspace || !metaReplica)
-        throw new Error('metadata_not_ready');
-      const replica = metaReplica;
-      await markSessionRead(args, replica);
-      if (metaReplica === replica) {
-        catalogs.set('meta', projectRows(replica.flock.scan(), 'meta'));
-        publish();
-      }
-      return {};
-    },
-    async renameSession(args: {
-      workspaceId: string;
-      sessionId: string;
-      title: string;
-    }) {
-      if (args.workspaceId !== workspace || !metaReplica)
-        throw new Error('metadata_not_ready');
-      const replica = metaReplica;
-      await renameSession(args, replica);
-      if (metaReplica === replica) {
-        catalogs.set('meta', projectRows(replica.flock.scan(), 'meta'));
-        publish();
-      }
-      return {};
-    },
-    session(id: string) {
-      const result = openSession(id, workspace, getGrant, send, markDispatch);
-      send({
-        type: 'sessionSubscriptions',
-        ids: retainedSessionIds(),
-        reserved: reservedSessionIds(),
-      });
-      return result;
-    },
-    closeSession() {
-      closeSession();
-      send({
-        type: 'sessionSubscriptions',
-        ids: retainedSessionIds(),
-        reserved: reservedSessionIds(),
-      });
-    },
-    async ensureSession(args: { sessionId: string }) {
-      const result = ensureSession(
-        args.sessionId,
-        workspace,
-        getGrant,
-        send,
-        markDispatch,
-      );
-      send({
-        type: 'sessionSubscriptions',
-        ids: retainedSessionIds(),
-        reserved: reservedSessionIds(),
-      });
-      return result;
-    },
-    releaseReserve(args: { sessionId: string }) {
-      releaseReserve(args.sessionId);
-      send({
-        type: 'sessionSubscriptions',
-        ids: retainedSessionIds(),
-        reserved: reservedSessionIds(),
-      });
-      return {};
-    },
-    restoreSessions(
-      ids: string[],
-      current: string | null,
-      reserved: string[] = [],
-    ) {
-      for (const id of ids) {
-        if (id === current || reserved.includes(id)) continue;
-        void openSession(id, workspace, getGrant, send, markDispatch, false);
-      }
-      for (const id of reserved)
-        void ensureSession(id, workspace, getGrant, send, markDispatch).catch(
-          () => {},
-        );
-      if (current)
-        void openSession(current, workspace, getGrant, send, markDispatch);
-      else closeSession();
-      send({
-        type: 'sessionSubscriptions',
-        ids: retainedSessionIds(),
-        reserved: reservedSessionIds(),
-      });
-    },
-    itemDetail,
-    respondPermission,
-    controlTurn,
-    checkTurnQuota,
-    editSession(args: Parameters<typeof editSession>[0]) {
-      if (!metaReplica || unhealthy.size)
-        return { state: 'not_sent', reason: 'metadata_not_ready' };
-      const meta = metaReplica.flock.get(['m', `session-${args.sessionId}`]) as
-        Record<string, any> | undefined;
-      if (!meta) return { state: 'not_sent', reason: 'session_not_ready' };
-      const capability = machineReplicas
-        .get(meta.machineId)
-        ?.get(['acpCapability', meta.agentConfigId]) as
-        Record<string, any> | undefined;
-      return editSession(args, meta, capability);
-    },
-    sendTurn(args: Parameters<typeof sendSessionTurn>[0]) {
-      if (!metaReplica)
-        return { state: 'not_sent', reason: 'metadata_not_ready' };
-      const source = {
-        workspaceId: workspace,
-        sessionId: args.sessionId,
-        userId: args.userId,
-        cliType: args.cliType,
-        agentType: args.agentType,
-      };
-      const sourceWorkspace = workspace;
-      const access = shortcutAccess(
-        workspace,
-        runtimeUserId,
-        scopedShortcutCloud(sourceWorkspace, runtimeUserId),
-        AbortSignal.timeout(30000),
-      );
-      return sendSessionTurn(
-        args,
-        (text) =>
-          expandShortcuts(text, access.list, access.read, (part) =>
-            expandMentions(part, (category) =>
-              getMentions({ ...source, category }),
-            ),
-          ),
-        async (persisted) => {
-          if (workspace !== sourceWorkspace || runtimeUserId !== args.userId)
-            throw new Error('workspace_changed');
-          const ids = await sessionMcpSelection(
-            sourceWorkspace,
-            getGrant,
-            persisted,
-            AbortSignal.timeout(30000),
-          );
-          if (workspace !== sourceWorkspace || runtimeUserId !== args.userId)
-            throw new Error('workspace_changed');
-          return ids;
-        },
-      );
-    },
-    start(id: string, userId?: string, active = true) {
-      workspace = id;
-      runtimeUserId = userId ?? '';
-      watch('meta');
-      if (active) startPresence();
-    },
-    setActive(active: boolean) {
-      if (!workspace) return;
-      if (active) startPresence();
-      else {
-        stopPresence?.();
-        stopPresence = undefined;
-      }
-    },
-    grant(value: Grant | null) {
-      if (!value) grantReject?.(new Error('grant_failed'));
-      else {
-        grant = value;
-        expiresAt = Date.now() + Math.max(1, value.expiresIn - 30) * 1000;
-        grantResolve?.(value);
-      }
-      grantResolve = undefined;
-      grantReject = undefined;
+    receive(envelope: string) {
+      channel.receive(envelope);
     },
   },
 });
