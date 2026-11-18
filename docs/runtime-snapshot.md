@@ -1,6 +1,6 @@
 # Shared runtime source and dependency updates
 
-`runtime/vendor/cloud-runtime` snapshots this monorepo's `apps/mobile/ios/packages/cloud-runtime`
+`runtime/vendor/cloud-runtime` snapshots the sibling iOS submodule's `packages/cloud-runtime`
 verbatim. `vendor/PROVENANCE.json` records the base commit and reviewed updates.
 `vendor/SHA256.json` records every mirrored file. Each asset build checks the
 snapshot for changed, added or missing files and symlinks. The drift test modifies
@@ -12,7 +12,7 @@ the iOS package, where the iOS asset build verifies the generated module.
 
 For an intentional update:
 
-1. Select and record a reviewed upstream commit. Export `apps/mobile/ios/packages/cloud-runtime` into a temporary directory using `git archive <commit> apps/mobile/ios/packages/cloud-runtime` and omit the two Roost authoring paths above.
+1. Select and record a reviewed upstream commit. From the Android repository root, export the iOS package into a temporary directory using `git -C ../ios archive <ios-commit>:packages/cloud-runtime` and omit the two Roost authoring paths above.
 2. Compare that export against the current snapshot. Review protocol changes, licensing and browser dependencies. Preserve Android adaptation in `runtime/src`, outside the snapshot.
 3. Replace the snapshot only after reviewing the diff; update PROVENANCE and SHA256 together. Generate hashes with the exported `hashes()` function in `runtime/snapshot.mjs`, directed at the reviewed source directory. No build regenerates the manifest automatically.
 4. Run snapshot verification, `npm ci`, JS tests, asset build, JVM and Android bridge tests. Update `runtime/contract/fixtures.json` only for an intentional contract change. Capture actual WebView/WASM results and verify release assets contain no diagnostics.
