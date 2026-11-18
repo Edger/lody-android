@@ -1,5 +1,6 @@
 package app.lody.android.chat
 
+import android.content.pm.PackageManager
 import androidx.annotation.StringRes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -33,10 +34,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -90,14 +94,6 @@ internal fun ConversationSyncDetailsSheet(details: ConversationSyncDetails, mach
                 HorizontalDivider(color = LodyTheme.colors.borderSubtle)
                 SyncStep(it, R.string.chat_sync_messages, machineName.ifBlank { stringResource(R.string.chat_sync_target) })
             }
-            HorizontalDivider(color = LodyTheme.colors.borderSubtle)
-            Row(
-                Modifier.fillMaxWidth().clearAndSetSemantics {},
-                horizontalArrangement = Arrangement.spacedBy(LodySpacing.lg, Alignment.CenterHorizontally),
-            ) {
-                FlowLegend(LodyIcons.ArrowRight, R.string.chat_sync_request, request = true)
-                FlowLegend(LodyIcons.ArrowLeft, R.string.chat_sync_return_route)
-            }
         }
     }
 }
@@ -125,11 +121,17 @@ private fun SyncWait(since: Long) {
 private fun SyncStep(step: ConversationSyncDetails.Step, @StringRes label: Int, machineName: String? = null) {
     val colors = LodyTheme.colors
     val typography = LodyTheme.typography
-    val nodes = listOfNotNull(
-        SyncNode(LodyIcons.Smartphone, stringResource(R.string.chat_sync_device)),
-        SyncNode(LodyIcons.Server, stringResource(R.string.chat_sync_server)),
-        machineName?.let { SyncNode(LodyIcons.Desktop, it) },
-    )
+    val deviceWidth = LocalConfiguration.current.smallestScreenWidthDp
+    val isDesktop = LocalContext.current.packageManager.hasSystemFeature(PackageManager.FEATURE_PC)
+    val deviceIcon = when {
+        isDesktop -> LodyIcons.Machine
+        deviceWidth >= 600 -> LodyIcons.Tablet
+        deviceWidth > 0 -> LodyIcons.Smartphone
+        else -> LodyIcons.Desktop
+    }
+    val device = SyncNode(deviceIcon, stringResource(R.string.chat_sync_device))
+    val server = SyncNode(LodyIcons.Server, stringResource(R.string.chat_sync_server))
+    val target = machineName?.let { SyncNode(LodyIcons.Desktop, it) }
     val (phaseIcon, phaseColor) = when (step.phase) {
         Phase.Confirmed -> LodyIcons.Check to colors.successDefault
         Phase.Retrying, Phase.Disconnected -> LodyIcons.Alert to colors.warningDefault
@@ -159,7 +161,7 @@ private fun SyncStep(step: ConversationSyncDetails.Step, @StringRes label: Int, 
                 Text(stringResource(step.phase.label), style = typography.footnote, color = colors.textSecondary)
             }
         }
-        SyncFlow(nodes)
+        SyncFlow(source = target ?: server, relay = server.takeIf { target != null }, destination = device)
         if (reason != null) Text(stringResource(reason), style = typography.footnote, color = colors.textSecondary)
     }
 }
@@ -167,72 +169,74 @@ private fun SyncStep(step: ConversationSyncDetails.Step, @StringRes label: Int, 
 private data class SyncNode(val icon: ImageVector, val label: String)
 
 @Composable
-private fun SyncFlow(nodes: List<SyncNode>) {
+private fun SyncFlow(source: SyncNode, relay: SyncNode?, destination: SyncNode) {
     val colors = LodyTheme.colors
-    val request = stringResource(R.string.chat_sync_request)
-    val updates = stringResource(R.string.chat_sync_return_route)
-    val outgoing = nodes.joinToString(" → ") { it.label }
-    val incoming = nodes.asReversed().joinToString(" → ") { it.label }
-    Row(
+    val nodes = listOfNotNull(
+        source to stringResource(R.string.chat_sync_source),
+        relay?.let { it to stringResource(R.string.chat_sync_relay) },
+        destination to stringResource(R.string.chat_sync_destination),
+    )
+    val description = if (relay == null) {
+        stringResource(R.string.chat_sync_direct_flow, source.label, destination.label)
+    } else {
+        stringResource(R.string.chat_sync_relayed_flow, source.label, relay.label, destination.label)
+    }
+    Box(
         Modifier.fillMaxWidth().padding(vertical = LodySpacing.xs).clearAndSetSemantics {
             role = Role.Image
-            contentDescription = "$request $outgoing. $updates $incoming."
+            contentDescription = description
         },
     ) {
-        nodes.forEachIndexed { index, node ->
-            if (index > 0) FlowLink(Modifier.weight(0.65f))
-            Column(
-                Modifier.weight(1f),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(LodySpacing.xs),
-            ) {
-                val tileShape = RoundedCornerShape(LodyRadius.lg)
-                Box(
-                    Modifier.width(LodySize.controlLg).height(LodySize.controlMd)
-                        .background(colors.bgSunken, tileShape)
-                        .border(LodyStroke.default, colors.borderSubtle, tileShape),
-                    contentAlignment = Alignment.Center,
+        Row(Modifier.fillMaxWidth()) {
+            nodes.forEach { (node, role) ->
+                Column(
+                    Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(LodySpacing.xs),
                 ) {
-                    Icon(node.icon, null, Modifier.size(LodyIconSize.md), tint = colors.iconPrimary)
+                    val tileShape = RoundedCornerShape(LodyRadius.lg)
+                    Box(
+                        Modifier.width(LodySize.controlLg).height(LodySize.controlMd)
+                            .background(colors.bgSunken, tileShape)
+                            .border(LodyStroke.default, colors.borderSubtle, tileShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(node.icon, null, Modifier.size(LodyIconSize.md), tint = colors.iconPrimary)
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(LodySpacing.xxs),
+                    ) {
+                        Text(
+                            node.label, style = LodyTheme.typography.footnote, color = colors.textPrimary,
+                            textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(role, style = LodyTheme.typography.caption, color = colors.textSecondary)
+                    }
                 }
-                Text(
-                    node.label, style = LodyTheme.typography.footnote, color = colors.textPrimary,
-                    textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                )
             }
         }
-    }
-}
-
-@Composable
-private fun FlowLink(modifier: Modifier = Modifier) {
-    val request = LodyTheme.colors.accentDefault
-    val returned = LodyTheme.colors.textSecondary
-    Canvas(modifier.height(LodySize.controlMd)) {
-        val tip = LodySpacing.xs.toPx()
-        val left = LodySpacing.xxs.toPx()
-        val right = size.width - left
-        val upper = center.y - tip
-        val lower = center.y + tip
-        val weight = LodyStroke.strong.toPx()
-
-        drawLine(request, Offset(left, upper), Offset(right, upper), weight, StrokeCap.Round)
-        drawLine(request, Offset(right - tip, upper - tip), Offset(right, upper), weight, StrokeCap.Round)
-        drawLine(request, Offset(right - tip, upper + tip), Offset(right, upper), weight, StrokeCap.Round)
-        drawLine(
-            returned, Offset(right, lower), Offset(left, lower), LodyStroke.default.toPx(),
-            pathEffect = PathEffect.dashPathEffect(floatArrayOf(tip, tip)),
-        )
-        drawLine(returned, Offset(left + tip, lower - tip), Offset(left, lower), weight, StrokeCap.Round)
-        drawLine(returned, Offset(left + tip, lower + tip), Offset(left, lower), weight, StrokeCap.Round)
-    }
-}
-
-@Composable
-private fun FlowLegend(icon: ImageVector, @StringRes label: Int, request: Boolean = false) {
-    val colors = LodyTheme.colors
-    Row(horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, Modifier.size(LodyIconSize.sm), tint = if (request) colors.accentDefault else colors.iconSecondary)
-        Text(stringResource(label), style = LodyTheme.typography.footnote, color = colors.textSecondary)
+        Canvas(Modifier.fillMaxWidth().height(LodySize.controlMd)) {
+            val span = size.width / nodes.size
+            val inset = LodySize.controlLg.toPx() / 2 + LodySpacing.xs.toPx()
+            val available = span - inset * 2
+            if (available <= 0) return@Canvas
+            val tip = minOf(LodySpacing.xs.toPx(), available / 2)
+            val centerY = size.height / 2
+            val arrows = Path()
+            for (index in 0 until nodes.lastIndex) {
+                val start = (index + 0.5f) * span + inset
+                val end = start + available
+                arrows.moveTo(start, centerY)
+                arrows.lineTo(end, centerY)
+                arrows.moveTo(end - tip, centerY - tip)
+                arrows.lineTo(end, centerY)
+                arrows.lineTo(end - tip, centerY + tip)
+            }
+            drawPath(
+                arrows, colors.accentDefault,
+                style = Stroke(width = LodyStroke.strong.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+        }
     }
 }

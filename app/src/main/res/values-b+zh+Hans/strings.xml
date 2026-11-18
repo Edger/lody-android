@@ -981,7 +981,11 @@
     <string name="chat_sync_device">当前设备</string>
     <string name="chat_sync_server">Lody 服务器</string>
     <string name="chat_sync_target">目标电脑</string>
-    <string name="chat_sync_request">读取请求</string>
+    <string name="chat_sync_source">数据来源</string>
+    <string name="chat_sync_relay">转发</string>
+    <string name="chat_sync_destination">接收方</string>
+    <string name="chat_sync_direct_flow">%1$s 将数据同步到%2$s</string>
+    <string name="chat_sync_relayed_flow">%1$s 通过 %2$s 将数据同步到%3$s</string>
     <string name="chat_sync_messages">会话消息</string>
     <string name="chat_sync_session_state">会话状态</string>
     <string name="chat_sync_connecting">正在连接</string>
@@ -1000,5 +1004,4 @@
     <string name="chat_sync_metadata">正在等待会话元数据</string>
     <string name="chat_sync_stream_closed">会话数据流已关闭</string>
     <string name="chat_sync_stalled_cursor">会话数据流未继续推进</string>
-    <string name="chat_sync_return_route">更新返回</string>
 </resources>
