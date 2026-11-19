@@ -98,6 +98,49 @@ for (const [failure, expected] of [[undefined, 'accepted'], ['history', 'unknown
   });
 }
 
+test('a server tail cannot confirm an Android session with unapplied Loro updates', { timeout: 5_000 }, async (t) => {
+  let onRead = Promise.withResolvers();
+  let latest;
+  const firstRead = onRead.promise;
+  const f = await fixture({
+    readControl() {
+      const response = Promise.withResolvers();
+      onRead.resolve(response.resolve);
+      return response.promise;
+    },
+    observe(event) {
+      if (event.session) latest = JSON.parse(event.session);
+    },
+  });
+  t.after(() => f.close());
+  const add = (id) => {
+    const from = f.doc.version();
+    f.doc.getList('history').push({ id, role: 'assistant', finished: true, items: [] });
+    f.doc.commit();
+    const bytes = f.doc.export({ mode: 'update', from });
+    const body = new Uint8Array(4 + bytes.length);
+    new DataView(body.buffer).setUint32(0, bytes.length);
+    body.set(bytes, 4);
+    return { body };
+  };
+  const dependency = add('earlier');
+  const pending = add('later');
+  const send = async (reply, nextOffset, payload) => {
+    onRead = Promise.withResolvers();
+    reply(ok({ nextOffset, upToDate: true, closed: false, payload }));
+    const next = await onRead.promise;
+    await f.reopen();
+    return next;
+  };
+  assert.equal(latest.syncDetails.document.phase, 'confirmed');
+  const next = await send(await firstRead, '2', pending);
+  assert.equal(latest.syncDetails.document.phase, 'syncing');
+  assert.deepEqual(latest.entries, []);
+  await send(next, '3', dependency);
+  assert.equal(latest.syncDetails.document.phase, 'confirmed');
+  assert.deepEqual(latest.entries.map((entry) => entry.id), ['earlier', 'later']);
+});
+
 test('Android Roost waits for control-stream recovery even after owner history catches up', { timeout: 8_000 }, async (t) => {
   const blocked = Promise.withResolvers();
   const recovered = Promise.withResolvers();
