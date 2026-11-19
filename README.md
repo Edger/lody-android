@@ -34,6 +34,8 @@ Gradle generates runtime assets from the vendored snapshot, pinned npm dependenc
 
 The debug launcher automatically runs compatibility checks and provides Run, Restart, Watchdog recovery, Stop, Details and Switch workspace buttons. Background the app and return to check lifecycle retention. Debug builds can be inspected via `chrome://inspect`; release builds exclude the diagnostic Activity, diagnostic HTML and fault injection.
 
+Only debug runtimes for the `offline-fixture` account bypass account/workspace admission, so offline diagnostics need no login. All other debug accounts and every release runtime retain native plaintext/E2EE admission.
+
 ## Push notifications
 
 The native app supports OneSignal (default) and direct FCM. Only the backend
