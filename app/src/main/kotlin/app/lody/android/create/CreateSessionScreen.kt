@@ -452,6 +452,10 @@ fun CreateSessionScreen(snapshot: CatalogSnapshot?, repository: CreationService,
                     mode = modeId,
                     modeLabel = modeName,
                     waiting = waitingText,
+                    // Web's landing usage: the selected agent's subscription windows for this model.
+                    usage = agent?.let { selected ->
+                        snapshot?.agentUsage?.get(selected.machineId)?.forSelection(selected.id, selected.agentType, modelId)
+                    }?.let { app.lody.android.runtime.SessionUsage(quota = it, modelId = modelId) },
                 )
             }
             // @ references, docked between the prompt and the keyboard as in a conversation; they
@@ -867,6 +871,7 @@ private fun Composer(
     mode: String?,
     modeLabel: String?,
     waiting: String,
+    usage: app.lody.android.runtime.SessionUsage? = null,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
@@ -959,6 +964,7 @@ private fun Composer(
                 ModeMark(mode, modeLabel)
 
             }
+            app.lody.android.chat.SessionUsageButton(usage)
             val ready = enabled && (prompt.text.isNotBlank() || attachments.isNotEmpty())
             val send = stringResource(R.string.create_send)
             LodyFilledIconButton(
