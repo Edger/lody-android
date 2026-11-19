@@ -63,10 +63,11 @@ open class LodyApplication : Application() {
         return createOfflineRuntime(scope)
     }
     protected open fun createOfflineRuntime(scope: RuntimeScope): CloudRuntime = WebViewRuntime(this, scope)
+    protected open fun admitRuntime(scope: RuntimeScope) { account.requirePlaintext(scope) }
     override fun onCreate() {
         super.onCreate()
         app.lody.android.home.AvatarImages.initialize(this)
-        runtimeOwner = RuntimeOwner(::createRuntime, Dispatchers.Main.immediate) { account.requirePlaintext(it) }
+        runtimeOwner = RuntimeOwner(::createRuntime, Dispatchers.Main.immediate, ::admitRuntime)
         val cache = AtomicCatalogStore(this)
         settingsCache = cache
         val scheduleCache = app.lody.android.schedules.ScheduleDisplayCache(cache)
