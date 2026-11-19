@@ -16,7 +16,7 @@ To test a change on this repository’s branch, switch branches inside `apps/mob
 
 Use Android Studio Rabbit 1 / AGP 9.4.1, Gradle 9.6.0 and JDK 17+ (validated with the IDE's embedded JDK 21). The Kotlin and Compose compiler versions are pinned together in `gradle/libs.versions.toml`. Compile SDK 37, target SDK 36, minimum SDK 26. Application ID: `ai.lody.android`.
 
-The local installed IDE was 2025.3 at bootstrap; upgrade it before IDE sync with this AGP. Local SDK paths stay in ignored `local.properties`.
+The local installed IDE was 2025.3 at bootstrap; upgrade it before IDE sync with this AGP. Local SDK paths stay in ignored `local.properties`. If the IDE cannot find `node`, set `lody.node` to its absolute path in `local.properties` (or pass `-Plody.node=...`); Homebrew's and `/usr/local`'s installs are detected automatically.
 
 Install Node.js 22+ and npm, then:
 
