@@ -144,7 +144,7 @@
     "files": [
       "src/runtime/mention-expansion.ts"
     ],
-    "note": "An @session:/@role: chip written straight after non-ASCII text (`\u8ba9@role:<id>`) expands to its reference at send, so the transcript shows the Role's name instead of the legacy `Role` fallback. Mirrored verbatim from the iOS runtime source in the same change."
+    "note": "An @session:/@role: chip written straight after non-ASCII text (`让@role:<id>`) expands to its reference at send, so the transcript shows the Role's name instead of the legacy `Role` fallback. Mirrored verbatim from the iOS runtime source in the same change."
   },
   "perModelConfigOptions": {
     "files": [
@@ -237,5 +237,17 @@
       "scripts/build.mjs"
     ],
     "note": "Mirrors the iOS DataRuntime CSP template: permit wss: alongside https: while retaining all other directives. Dependencies and licenses are unchanged."
+  },
+  "conversationContextUsage": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "4117cc0561d17e7706dd9925b29b39746f5d8c6f",
+    "files": [
+      "src/models/catalog.ts",
+      "src/protocol/catalog.ts",
+      "src/protocol/session-usage.ts",
+      "src/runtime/project.ts",
+      "src/runtime/session.ts"
+    ],
+    "note": "Context window usage comes from catalog session meta `contextWindowUsage` (as on web) through sessionQuotaProjection, not the session document, so the composer ring shows context occupancy first. Dependencies and licenses are unchanged."
   }
 }
