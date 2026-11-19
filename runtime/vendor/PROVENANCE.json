@@ -1,9 +1,9 @@
 {
   "source": "LodyAI/lody-ios packages/cloud-runtime",
-  "commit": "ddce4386dc5894f270137e892cc0f7588b7d696d",
+  "commit": "239c0301071d04584b49938362a2c235544160d7",
   "license": "AGPL-3.0-only",
   "path": "packages/cloud-runtime",
-  "export": "git -C apps/mobile/ios archive ddce4386dc5894f270137e892cc0f7588b7d696d packages/cloud-runtime",
+  "export": "git -C apps/mobile/ios archive 239c0301071d04584b49938362a2c235544160d7 packages/cloud-runtime",
   "note": "Complete snapshot of the pinned iOS cloud-runtime package, excluding Roost authoring source and its generator. SHA256.json records every mirrored file. Earlier entries retain the source-update history.",
   "roostHistory": {
     "files": [
@@ -16,6 +16,7 @@
       "scripts/build.mjs",
       "src/contract/methods.ts",
       "src/contract/sessions.ts",
+      "src/contract/sharing.ts",
       "src/runtime/archive-session.ts",
       "src/runtime/create-session.ts",
       "src/runtime/handlers/lifecycle.ts",
@@ -34,7 +35,7 @@
     "note": "The iOS asset build verifies the Roost browser module against the pinned source and shared input refactor. Android snapshots the generated module and licenses verbatim. The authoring source and generator stay in iOS.",
     "upstream": {
       "repository": "https://github.com/LodyAI/Lody",
-      "commit": "57750dd60f972c6c76510d0191cfc8cfb74afe52",
+      "commit": "bc9044ecc8f59ff7b36fe649b30e11e220fcb232",
       "sources": [
         "packages/components/src/lib/e2ee-local-data.ts",
         "packages/components/src/lib/encrypted-dispatch-outcome.ts",
@@ -49,6 +50,7 @@
         "packages/shared/src/acp-authentication-limits.ts",
         "packages/shared/src/acp-config-option-sensitivity.ts",
         "packages/shared/src/acp-model-capabilities.ts",
+        "packages/shared/src/acp-model-config-options.ts",
         "packages/shared/src/acp-run-config.ts",
         "packages/shared/src/acp/claude-subagent-task.ts",
         "packages/shared/src/agent-brand.ts",
@@ -79,6 +81,7 @@
         "packages/shared/src/repo-doc-meta.ts",
         "packages/shared/src/rpc-secret.ts",
         "packages/shared/src/schema.ts",
+        "packages/shared/src/session-access.ts",
         "packages/shared/src/session-data/directory.ts",
         "packages/shared/src/session-data/domain.ts",
         "packages/shared/src/session-data/history-patches.ts",
@@ -144,7 +147,7 @@
     "files": [
       "src/runtime/mention-expansion.ts"
     ],
-    "note": "An @session:/@role: chip written straight after non-ASCII text (`\u8ba9@role:<id>`) expands to its reference at send, so the transcript shows the Role's name instead of the legacy `Role` fallback. Mirrored verbatim from the iOS runtime source in the same change."
+    "note": "An @session:/@role: chip written straight after non-ASCII text (`让@role:<id>`) expands to its reference at send, so the transcript shows the Role's name instead of the legacy `Role` fallback. Mirrored verbatim from the iOS runtime source in the same change."
   },
   "perModelConfigOptions": {
     "files": [
@@ -237,5 +240,10 @@
       "scripts/build.mjs"
     ],
     "note": "Mirrors the iOS DataRuntime CSP template: permit wss: alongside https: while retaining all other directives. Dependencies and licenses are unchanged."
+  },
+  "roostCheckpointSubscription": {
+    "iosCommit": "239c0301071d04584b49938362a2c235544160d7",
+    "lodyCommit": "bc9044ecc8f59ff7b36fe649b30e11e220fcb232",
+    "note": "Shared Roost subscription and exact checkpoint recovery. Scoped history proofs are minted by the native host."
   }
 }

@@ -204,8 +204,8 @@ class RuntimeProtocolTest {
   assertEquals(FileContent.Failed("odd.md", "read_failed"), RuntimeProtocol.file(JSONObject("""{"status":"ok","kind":"text"}"""), "odd.md"))
  }
  @Test fun previewsCrossTheNativeBoundary() {
-  val token = RuntimeProtocol.event(JSONObject().put("type", "previewToken").put("requestId", "r").put("intent", "{\"workspaceId\":\"w\"}"))
-  assertEquals(RuntimeEvent.PreviewTokenRequested("r", "{\"workspaceId\":\"w\"}"), token)
+  val token = RuntimeProtocol.event(JSONObject().put("type", "machineToken").put("operation", "historyToken").put("requestId", "r").put("intent", "{\"workspaceId\":\"w\"}"))
+  assertEquals(RuntimeEvent.MachineTokenRequested("r", "historyToken", "{\"workspaceId\":\"w\"}"), token)
   val session = RuntimeProtocol.event(JSONObject().put("type", "session").put("sessionId", "s")
    .put("session", """{"v":1,"status":"live","entries":[],"preview":{"label":"localhost:5173","active":true}}""")) as RuntimeEvent.SessionUpdated
   assertEquals(BrowserPreview("localhost:5173", true), session.snapshot.preview)

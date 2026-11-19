@@ -17,6 +17,11 @@ For an intentional update:
 3. Replace the snapshot only after reviewing the diff; update PROVENANCE and SHA256 together. Generate hashes with the exported `hashes()` function in `runtime/snapshot.mjs`, directed at the reviewed source directory. No build regenerates the manifest automatically.
 4. Run snapshot verification, `npm ci`, JS tests, asset build, JVM and Android bridge tests. Update `runtime/contract/fixtures.json` only for an intentional contract change. Capture actual WebView/WASM results and verify release assets contain no diagnostics.
 
+Roost subscriptions use the shared owner's durable checkpoints over the existing
+RPC streams. The Android bridge accepts the scoped `historyToken` call and
+returns only the history proof minted by native for that workspace. The mirrored
+reader applies an exact-base delta or recovers from the persisted checkpoint.
+
 The current runtime pins Flock 0.5.0, Streams Client 0.13.1, Streams CRDT
 0.21.1 and Loro 1.17.0, matching the root workspace and iOS decoder.
 Control requests and durable uploads each retain a 15-second budget, with
@@ -221,8 +226,8 @@ stream-specific tokens come from `getStreamToken`.
 
 The bridge forwards `sessionPreview`, `iosSimulatorControl` and `androidEmulatorControl` to the
 snapshot unchanged, with the verified identity, and answers the runtime's `shareRequest`
-`previewToken` host call through native (`previewToken` event, `previewTokenReply`); other
-share-request operations stay unsupported. The network gates need no new streams: the preview calls
+`previewToken` host call through the native machine-proof broker
+(`machineToken` event, `machineTokenReply`). The network gates need no new streams: the preview calls
 use the existing machine RPC request and response streams. See [Remote previews](rules/previews.md).
 
 
