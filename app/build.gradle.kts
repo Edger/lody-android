@@ -1,11 +1,25 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
 }
 
+// Android Studio starts Gradle from the GUI session, whose PATH may omit Homebrew or nvm.
+// Resolve node explicitly; an explicit lody.node wins over the common install locations.
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
+}
+val nodeExecutable = providers.gradleProperty("lody.node").orNull
+    ?: localProperties.getProperty("lody.node")
+    ?: listOf("/opt/homebrew/bin/node", "/usr/local/bin/node")
+        .firstOrNull { File(it).canExecute() }
+    ?: "node"
+
 // Shared, non-executable .env.local parser; shell environment takes precedence.
 val backendJson = providers.exec {
-    commandLine("node", rootProject.file("../backend-config.mjs").absolutePath)
+    commandLine(nodeExecutable, rootProject.file("../backend-config.mjs").absolutePath)
 }.standardOutput.asText.get()
 val backends = groovy.json.JsonSlurper().parseText(backendJson) as Map<*, *>
 
@@ -101,7 +115,7 @@ abstract class RuntimeAssets : Exec() {
 }
 val generateRuntimeAssets = tasks.register<RuntimeAssets>("generateRuntimeAssets") {
     workingDir(rootProject.file("runtime"))
-    commandLine("node", "build.mjs")
+    commandLine(nodeExecutable, "build.mjs")
     inputs.dir(rootProject.file("runtime/vendor"))
     inputs.dir(rootProject.file("runtime/src"))
     inputs.file(rootProject.file("runtime/build.mjs"))

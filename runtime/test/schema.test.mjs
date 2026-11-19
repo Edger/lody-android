@@ -27,21 +27,23 @@ test('shared schemas retain accepted identities and reject extra or malformed fi
 const usage = await module('../vendor/cloud-runtime/src/protocol/session-usage.ts');
 const agentUsage = await module('../vendor/cloud-runtime/src/protocol/agent-usage.ts');
 const projection = await module('../vendor/cloud-runtime/src/runtime/project.ts');
-test('session summary follows live context and latest compaction, never sums turn tokens', async () => {
+const catalog = await module('../vendor/cloud-runtime/src/protocol/catalog.ts');
+test('session summary takes context from session meta and compaction from history, never sums turn tokens', async () => {
  const {LoroDoc} = await import('loro-crdt/base64');
  const doc = new LoroDoc();
- doc.getMap('session').set('contextWindowUsage',{used:120,size:100});
+ doc.getMap('session').set('contextWindowUsage',{used:1,size:2});
  doc.getList('history').push({id:'a',role:'assistant',finished:false,tokenUsage:{input:9999},items:[{type:'tool_call',toolCallId:'compact',activityKind:'context_compaction',status:'in_progress'}]});
  let snapshot=JSON.parse(JSON.stringify(projection.projectSession(doc,'live')));
- assert.deepEqual(snapshot.usage.context,{used:120,size:100});
+ assert.equal(snapshot.usage.context,null,'the session document is not the context source');
  assert.equal(snapshot.usage.isContextCompacting,true);
  doc.getList('history').push({id:'b',role:'assistant',finished:true,items:[{type:'tool_call',toolCallId:'done',activityKind:'context_compaction',status:'completed'}]});
- doc.getMap('session').set('contextWindowUsage',{used:0,size:100});
- snapshot=projection.projectSession(doc,'live');
- assert.deepEqual(snapshot.usage.context,{used:0,size:100});
- assert.equal(snapshot.usage.isContextCompacting,false);
- doc.getMap('session').delete('contextWindowUsage');
- assert.equal(projection.projectSession(doc,'live').usage.context,null);
+ assert.equal(projection.projectSession(doc,'live').usage.isContextCompacting,false);
+ const [row]=catalog.projectRows([{key:['e','session-s'],value:true},{key:['m','session-s'],value:{id:'s',machineId:'m',contextWindowUsage:{used:120,size:100}}}],'meta').sessions;
+ assert.deepEqual(row.contextWindowUsage,{used:120,size:100});
+ assert.deepEqual(usage.sessionQuotaProjection(row,undefined).context,{used:120,size:100});
+ assert.deepEqual(usage.sessionQuotaProjection({contextWindowUsage:{used:-5,size:100}},undefined).context,{used:0,size:100});
+ assert.equal(usage.sessionQuotaProjection({contextWindowUsage:{used:5,size:0}},undefined).context,null);
+ assert.equal(usage.sessionQuotaProjection({},undefined).context,null);
 });
 test('provider quotas preserve config identity, capabilities, model tiers and expired reset values', () => {
  const config={id:'official',machineId:'m',cliType:'builtin',agentType:'codex',env:{LANG:'en'}};

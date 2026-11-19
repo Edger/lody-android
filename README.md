@@ -16,7 +16,7 @@ To test a change on this repository’s branch, switch branches inside `apps/mob
 
 Use Android Studio Rabbit 1 / AGP 9.4.1, Gradle 9.6.0 and JDK 17+ (validated with the IDE's embedded JDK 21). The Kotlin and Compose compiler versions are pinned together in `gradle/libs.versions.toml`. Compile SDK 37, target SDK 36, minimum SDK 26. Application ID: `ai.lody.android`.
 
-The local installed IDE was 2025.3 at bootstrap; upgrade it before IDE sync with this AGP. Local SDK paths stay in ignored `local.properties`.
+The local installed IDE was 2025.3 at bootstrap; upgrade it before IDE sync with this AGP. Local SDK paths stay in ignored `local.properties`. If the IDE cannot find `node`, set `lody.node` to its absolute path in `local.properties` (or pass `-Plody.node=...`); Homebrew's and `/usr/local`'s installs are detected automatically.
 
 Install Node.js 22+ and npm, then:
 
@@ -33,6 +33,8 @@ adb shell am start -n ai.lody.android/app.lody.android.diagnostics.RuntimeProbeA
 Gradle generates runtime assets from the vendored snapshot, pinned npm dependencies and Android adapter before packaging. Dependency licenses are bundled alongside the HTML. No dependency on an iOS checkout, login or connected machine is required.
 
 The debug launcher automatically runs compatibility checks and provides Run, Restart, Watchdog recovery, Stop, Details and Switch workspace buttons. Background the app and return to check lifecycle retention. Debug builds can be inspected via `chrome://inspect`; release builds exclude the diagnostic Activity, diagnostic HTML and fault injection.
+
+Only debug runtimes for the `offline-fixture` account bypass account/workspace admission, so offline diagnostics need no login. All other debug accounts and every release runtime retain native plaintext/E2EE admission.
 
 ## Push notifications
 

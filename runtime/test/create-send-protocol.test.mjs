@@ -48,7 +48,7 @@ async function fixture({ failAt, target, owner, subscribe, readControl, observe 
       return ok();
     }
     async *live({ signal, mode }) {
-      assert.equal(mode, 'sse');
+      assert.equal(mode, 'long-poll');
       const request = replies.get(this.url.split('/ds/lody/')[1]);
       assert.equal(request.method, 'session/history-subscribe');
       for await (const result of subscribe(request, signal)) {
