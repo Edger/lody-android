@@ -196,7 +196,15 @@ open class WebViewRuntime internal constructor(
             RuntimeResult.Detail(RuntimeProtocol.detail(value as JSONObject))
         }
         is RuntimeCommand.TurnDiff -> {
-            val value = call("turnDiff", JSONArray().put(command.sessionId).put(command.entryId).put(command.path), CommandDeadline.QUERY)
+            val value = call("turnDiff", JSONArray().put(command.sessionId).put(command.entryId).put(command.path), CommandDeadline.FILE_READ)
+            RuntimeResult.Diff(RuntimeProtocol.diff(value as JSONObject))
+        }
+        is RuntimeCommand.WorkspaceChanges -> {
+            val value = call("workspaceChanges", JSONArray().put(command.sessionId), CommandDeadline.FILE_READ)
+            RuntimeResult.WorkspaceChanges(RuntimeProtocol.workspaceChanges(value as JSONObject))
+        }
+        is RuntimeCommand.FileDiff -> {
+            val value = call("fileDiff", JSONArray().put(command.sessionId).put(command.path), CommandDeadline.FILE_READ)
             RuntimeResult.Diff(RuntimeProtocol.diff(value as JSONObject))
         }
         is RuntimeCommand.ListDir -> {

@@ -1074,6 +1074,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                     pullRequestBusy = writing != null && bar.pullRequest?.let(prUpdates::writes) == true,
                     pullRequestPanel = pullRequestPanel,
                     panelFor = panelFor,
+                    workspaceChanges = { repository.workspaceChanges(scope, id) },
+                    workspaceDiff = { path -> repository.fileDiff(scope, id, path) },
                     relations = if (hasRelations) ({ SessionRelationsChip(id, context.relatedSessions, onSelectTab) }) else null,
                     devices = if (devicePlatforms.isNotEmpty()) ({
                         devicePlatforms.forEach { platform ->
@@ -1736,6 +1738,9 @@ internal fun ChatActionBar(
     pullRequestPanel: PullRequestPanel? = null,
     /** The PR panel for any PR; a Project group member's PR opens with its own. */
     panelFor: ((CatalogPullRequest) -> PullRequestPanel)? = null,
+    /** The working tree's changed files and one file's current diff, for the context menu's All changes. */
+    workspaceChanges: (suspend () -> app.lody.android.runtime.WorkspaceChanges)? = null,
+    workspaceDiff: (suspend (path: String) -> app.lody.android.runtime.FileDiff)? = null,
 ) {
     val context = bar.group != null || bar.pullRequest != null || bar.branch.isNotEmpty() || bar.repository.isNotEmpty()
     val diff = bar.hasDiff
@@ -1745,7 +1750,8 @@ internal fun ChatActionBar(
             devices?.invoke()
             relations?.invoke()
             if (bar.group != null) GroupContextItem(bar, bar.group, diffDot, onCopied, panelFor, labelMax)
-            else if (context || diff) ContextItem(bar, diffDot, onCopied, pullRequestPanel, busy = pullRequestBusy, labelMax = labelMax)
+            else if (context || diff) ContextItem(bar, diffDot, onCopied, pullRequestPanel, busy = pullRequestBusy, labelMax = labelMax,
+                workspaceChanges = workspaceChanges, workspaceDiff = workspaceDiff)
         }
     }
     @Composable fun Action() {
@@ -1893,11 +1899,14 @@ private fun ContextItem(
     modifier: Modifier = Modifier,
     busy: Boolean = false,
     labelMax: Dp = 160.dp,
+    workspaceChanges: (suspend () -> app.lody.android.runtime.WorkspaceChanges)? = null,
+    workspaceDiff: (suspend (path: String) -> app.lody.android.runtime.FileDiff)? = null,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var open by remember { mutableStateOf(false) }
+    var changes by remember { mutableStateOf(false) }
     val pr = bar.pullRequest
     val verdict = ciVerdict(pr?.ci)
     val label = pr?.let { "#${it.number}" } ?: bar.branch.ifEmpty { bar.repository.substringAfterLast('/') }
@@ -1909,6 +1918,9 @@ private fun ContextItem(
         .filter { it.isNotEmpty() }.distinct().joinToString(", ")
     var sheet by remember { mutableStateOf(false) }
     if (sheet && pr != null) PullRequestSheet(PullRequestView.of(bar, pr), verdict, onCopied, panel) { sheet = false }
+    if (changes && workspaceChanges != null && workspaceDiff != null) {
+        WorkspaceChangesSheet(workspaceChanges, workspaceDiff) { changes = false }
+    }
     Box(modifier.barCapsule(colors)) {
         // Always choose a destination before opening the PR or inspecting changes.
         BarCell(
@@ -1967,7 +1979,6 @@ private fun ContextItem(
                 )
             }
             if (diff) {
-                // Display only until Android has a workspace changes page.
                 DropdownMenuItem(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1978,8 +1989,8 @@ private fun ContextItem(
                         }
                     },
                     leadingIcon = { Icon(LodyIcons.Diff, contentDescription = null, tint = colors.iconSecondary, modifier = Modifier.size(LodyIconSize.md)) },
-                    onClick = { open = false },
-                    enabled = false,
+                    onClick = { open = false; changes = true },
+                    enabled = workspaceChanges != null && workspaceDiff != null,
                 )
             }
         }
@@ -2058,7 +2069,7 @@ private fun GroupContextItem(
                 }
             }
             if (diff) {
-                // Display only until Android has a workspace changes page, as the single-repository menu.
+                // Group-wide totals stay display only; a member's own diff opens from its PR.
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = LodySpacing.lg, vertical = LodySpacing.sm),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),

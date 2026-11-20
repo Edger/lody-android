@@ -53,6 +53,10 @@ sealed interface RuntimeCommand {
     data class ItemDetail(val sessionId: String, val entryId: String, val itemId: String) : RuntimeCommand
     /** One changed file's diff for one turn, from the session's computer. Read only. */
     data class TurnDiff(val sessionId: String, val entryId: String, val path: String) : RuntimeCommand
+    /** Every file the working tree changed, from the session's computer (upstream `workspaceChanges`). Read only. */
+    data class WorkspaceChanges(val sessionId: String) : RuntimeCommand
+    /** One changed file's current diff against its base (upstream `fileDiff`). Read only. */
+    data class FileDiff(val sessionId: String, val path: String) : RuntimeCommand
     /**
      * One folder of the session's local project ([relativePath] from the project root, "" for the
      * root), from the session's computer (upstream `listDir`). Read only.
@@ -138,6 +142,7 @@ sealed interface RuntimeResult {
     data object Accepted : RuntimeResult
     data class Detail(val value: StepDetail) : RuntimeResult
     data class Diff(val value: FileDiff) : RuntimeResult
+    data class WorkspaceChanges(val value: app.lody.android.runtime.WorkspaceChanges) : RuntimeResult
     data class Directory(val value: DirectoryListing) : RuntimeResult
     data class File(val value: FileContent) : RuntimeResult
     data class Pong(val healthy: Boolean) : RuntimeResult
@@ -536,6 +541,23 @@ sealed interface StepBlock {
 data class FileChange(val path: String, val added: Int, val removed: Int)
 
 /**
+ * One file the working tree changed (upstream `workspaceChanges`); [added] / [removed] are absent
+ * when the computer deferred the file's diff, and [kind] is `added` / `deleted` / `modified` when known.
+ */
+data class WorkspaceChange(
+    val path: String,
+    val added: Int? = null,
+    val removed: Int? = null,
+    val kind: String? = null,
+)
+
+/** The working tree's changed files, or why the computer could not list them (upstream `workspaceChanges`). */
+sealed interface WorkspaceChanges {
+    data class Ready(val files: List<WorkspaceChange>) : WorkspaceChanges
+    data class Unavailable(val reason: String) : WorkspaceChanges
+}
+
+/**
  * A file's text before and after a turn (upstream `turnDiff`). [oldText] / [newText] are null for a
  * side that is not text (binary, too large); [unavailable] carries the computer's reason when it
  * could not produce the diff (offline, file gone).
@@ -547,6 +569,8 @@ data class FileDiff(
     val added: Int? = null,
     val removed: Int? = null,
     val unavailable: String? = null,
+    /** A side the computer refused to send because it exceeds its size limit. */
+    val tooLarge: Boolean = false,
 )
 
 /** One folder of a local project (upstream `DirectoryListing`): folders first, then files, by name. */
