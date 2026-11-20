@@ -396,6 +396,8 @@ data class SessionSnapshot(
     val historyLoading: Boolean = false,
     /** User turns plus queued inputs, as the free-plan turn quota counts them; null when unknown. */
     val billableTurnCount: Int? = null,
+    val sendReady: Boolean = status == "live",
+    val controlReady: Boolean = status == "live",
 )
 sealed interface RuntimeEvent {
     data class ProvidersChanged(val machineId: String) : RuntimeEvent

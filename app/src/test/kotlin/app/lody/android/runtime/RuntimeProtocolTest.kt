@@ -172,6 +172,14 @@ class RuntimeProtocolTest {
   assertTrue(snapshot.historyHasMore)
   assertTrue(snapshot.historyLoading)
  }
+ @Test fun sessionCommandsCanBeReadyDuringHistorySync() {
+  val frame=JSONObject().put("type","session").put("sessionId","s").put("session",
+   """{"v":1,"status":"syncing","entries":[],"controlReady":true,"sendReady":false}""")
+  val snapshot=(RuntimeProtocol.event(frame) as RuntimeEvent.SessionUpdated).snapshot
+  assertEquals("syncing",snapshot.status)
+  assertTrue(snapshot.controlReady)
+  assertFalse(snapshot.sendReady)
+ }
  @Test fun sharedFixturesDecodeToTypedResults() {
   assertEquals(setOf("ping","setActive","probeSchema"),RuntimeProtocol.capabilities(fixtures.getJSONObject("hostReady")))
   val event=RuntimeProtocol.event(fixtures.getJSONObject("catalog")) as RuntimeEvent.CatalogUpdated

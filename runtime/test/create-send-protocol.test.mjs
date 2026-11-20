@@ -196,11 +196,15 @@ test('Android Roost waits for control-stream recovery even after owner history c
     await f.reopen();
   } while (!latest.entries[0]?.finished);
   assert.equal(latest.status, 'syncing');
+  assert.equal(latest.sendReady, false);
+  assert.equal(latest.controlReady, false);
   assert.deepEqual(earlySync, []);
   controlUnavailable = false;
   recovered.resolve(ok({ nextOffset: '2', upToDate: true, closed: false }));
   await synced.promise;
   assert.equal(latest.status, 'live');
+  assert.equal(latest.sendReady, true);
+  assert.equal(latest.controlReady, true);
 });
 
 test('Android snapshot opens a Roost session and writes input through the owner', async () => {
