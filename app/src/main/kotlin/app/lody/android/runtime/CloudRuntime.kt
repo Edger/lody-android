@@ -80,8 +80,13 @@ sealed interface RuntimeCommand {
     data class ScheduleDetail(val scheduleId: String) : RuntimeCommand
     /** An owner write (create / edit / pause / resume / run / delete); never retried here. */
     data class ScheduleCommand(val request: ScheduleCommandRequest) : RuntimeCommand
-    /** The watched session's managed web preview: open (or reuse) its link, or revoke it. Never retried. */
-    data class SessionPreview(val sessionId: String, val revoke: Boolean = false) : RuntimeCommand
+    /** The watched session's managed web preview: create (or reuse), check status, or revoke. Never retried. */
+    data class SessionPreview(
+        val sessionId: String,
+        val action: BrowserPreviewAction = BrowserPreviewAction.CREATE,
+        val restart: Boolean = false,
+        val stopProcess: Boolean = false,
+    ) : RuntimeCommand
     /** One iOS Simulator / Android Emulator lifecycle call for the session (list / start / status / stop). */
     data class DeviceControl(val platform: DevicePlatform, val sessionId: String, val command: DeviceCommand) : RuntimeCommand
     /**
@@ -227,6 +232,8 @@ data class CatalogSnapshot(
     val machineSimulators: Map<String, String> = emptyMap(),
     /** Computer id to Android Emulator support (`available`). */
     val machineEmulators: Map<String, String> = emptyMap(),
+    /** Computer id to numeric protocol capability versions advertised by its CLI. */
+    val machineCapabilities: Map<String, Map<String, Int>> = emptyMap(),
 )
 /**
  * One transcript turn. [timestamp] is ISO-8601; [status] is upstream's (`seen` once the agent

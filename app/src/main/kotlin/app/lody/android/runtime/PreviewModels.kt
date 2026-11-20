@@ -12,8 +12,22 @@ import org.json.JSONObject
 /** A session's managed web preview candidate (runtime session `preview`): `host:port`, and whether a link is open. */
 data class BrowserPreview(val label: String, val active: Boolean)
 
-/** `sessionPreview` result: the viewer link, or an error code with the computer's message. */
-data class BrowserPreviewReply(val url: String? = null, val error: String? = null, val message: String? = null, val status: Int? = null)
+/** `sessionPreview` lifecycle action. */
+enum class BrowserPreviewAction(val wire: String) {
+    CREATE("create"),
+    STATUS("status"),
+    REVOKE("revoke"),
+}
+
+/** `sessionPreview` result: the viewer link, expiration, active status, or an error code with the computer's message. */
+data class BrowserPreviewReply(
+    val url: String? = null,
+    val expiresAt: Long? = null,
+    val active: Boolean? = null,
+    val error: String? = null,
+    val message: String? = null,
+    val status: Int? = null,
+)
 
 /** The device preview families; each has its own runtime command and device id field. */
 enum class DevicePlatform(val method: String, val idField: String) {
@@ -26,7 +40,7 @@ sealed interface DeviceCommand {
     data object Devices : DeviceCommand
     data class Start(val deviceId: String, val quality: String? = null) : DeviceCommand
     data class Status(val operationId: String? = null) : DeviceCommand
-    data class Stop(val operationId: String) : DeviceCommand
+    data class Stop(val operationId: String, val shutdownDevice: Boolean = false) : DeviceCommand
 }
 
 /** [occupancy]: `available`, `this-session` or `other-session`. */
@@ -59,11 +73,18 @@ object PreviewJson {
             if (platform == DevicePlatform.ANDROID && command.quality in qualities) put("quality", command.quality)
         }
         is DeviceCommand.Status -> JSONObject().put("action", "status").apply { command.operationId?.let { put("operationId", it) } }
-        is DeviceCommand.Stop -> JSONObject().put("action", "stop").put("operationId", command.operationId)
+        is DeviceCommand.Stop -> JSONObject().put("action", "stop").put("operationId", command.operationId).apply {
+            if (command.shutdownDevice) put("shutdownDevice", true)
+        }
     }
 
     fun browser(json: JSONObject) = BrowserPreviewReply(
-        json.text("url"), json.text("error"), json.text("message"), (json.opt("status") as? Number)?.toInt(),
+        url = json.text("url"),
+        expiresAt = (json.opt("expiresAt") as? Number)?.toLong(),
+        active = json.opt("active") as? Boolean,
+        error = json.text("error"),
+        message = json.text("message"),
+        status = (json.opt("status") as? Number)?.toInt(),
     )
 
     /** Leniently: a malformed device is dropped; a preview without its ids is no preview. */
