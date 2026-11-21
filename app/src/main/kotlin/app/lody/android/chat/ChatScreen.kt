@@ -33,7 +33,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
@@ -742,10 +741,17 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     // Hosted by the screen, not the action bar: a catalog refresh can change which bar layout
     // fits (a running turn empties its actions), and must not unmount an open sheet.
     var workspaceChangesScope by remember(id) { mutableStateOf<DiffScope?>(null) }
+    // The menu's uncommitted read seeds the sheet, so the same list is not fetched twice.
+    var uncommittedChanges by remember(id) { mutableStateOf<WorkspaceChanges.Ready?>(null) }
+    var uncommittedLoadedAt by remember(id) { mutableStateOf(0L) }
     workspaceChangesScope?.let { diffScope ->
         WorkspaceChangesSheet(
             loadChanges = { repository.workspaceChanges(scope, id, diffScope) },
             loadDiff = { path -> repository.fileDiff(scope, id, path, diffScope) },
+            initial = uncommittedChanges.takeIf {
+                diffScope == DiffScope.Uncommitted &&
+                    System.currentTimeMillis() - uncommittedLoadedAt <= UncommittedCacheTtlMs
+            },
             uncommitted = diffScope == DiffScope.Uncommitted,
             onDismiss = { workspaceChangesScope = null },
         )
@@ -1102,7 +1108,11 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                     // The menu shows the uncommitted list's own ± instead of the branch totals.
                     loadUncommittedTotals = {
                         when (val changes = repository.workspaceChanges(scope, id, DiffScope.Uncommitted)) {
-                            is WorkspaceChanges.Ready -> workspaceDiffTotals(changes.files)
+                            is WorkspaceChanges.Ready -> {
+                                uncommittedChanges = changes
+                                uncommittedLoadedAt = System.currentTimeMillis()
+                                uncommittedSummary(changes.files)
+                            }
                             is WorkspaceChanges.Unavailable -> null
                         }
                     },
@@ -1269,7 +1279,7 @@ private const val RUN_MODE = "mode"
 
 private val RunningStatuses = setOf("running", "initializing", "processing", "in_progress", "queued")
 
-private val HeaderFade = 24.dp
+private const val UncommittedCacheTtlMs = 5_000L
 
 /** The conversation page's Status view actions; [tier] decides which apply. */
 internal class StatusMenu(val tier: app.lody.android.runtime.StatusTier, val onLater: () -> Unit, val onSettle: () -> Unit, val onFocus: () -> Unit)
@@ -1294,15 +1304,7 @@ internal fun BoxScope.ChatHeader(title: String, tabs: List<CatalogSession>, clos
             .fillMaxWidth()
             // The page colour stays opaque behind the title and machine line, then fades out below the
             // header so the transcript reads beneath it without colliding with the subtitle.
-            .drawBehind {
-                val fade = HeaderFade.toPx()
-                drawRect(Brush.verticalGradient(
-                    0f to colors.bgBase,
-                    size.height / (size.height + fade) to colors.bgBase.copy(alpha = 0.92f),
-                    1f to colors.bgBase.copy(alpha = 0f),
-                    endY = size.height + fade,
-                ), size = androidx.compose.ui.geometry.Size(size.width, size.height + fade))
-            }
+            .pageHeaderFade()
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
             .padding(horizontal = LodySpacing.sm, vertical = LodySpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
@@ -1784,7 +1786,7 @@ internal fun ChatActionBar(
     /** Opens the working tree's changed files for this conversation, for one comparison scope. */
     onOpenWorkspaceChanges: ((DiffScope) -> Unit)? = null,
     /** Reads the uncommitted list for the menu's row and ± counts; null or a failure hides them. */
-    loadUncommittedTotals: (suspend () -> WorkspaceDiffTotals?)? = null,
+    loadUncommittedTotals: (suspend () -> UncommittedSummary?)? = null,
 ) {
     val context = bar.group != null || bar.pullRequest != null || bar.branch.isNotEmpty() || bar.repository.isNotEmpty()
     val diff = bar.hasDiff
@@ -1947,7 +1949,7 @@ private fun ContextItem(
     busy: Boolean = false,
     labelMax: Dp = 160.dp,
     onOpenWorkspaceChanges: ((DiffScope) -> Unit)? = null,
-    loadUncommittedTotals: (suspend () -> WorkspaceDiffTotals?)? = null,
+    loadUncommittedTotals: (suspend () -> UncommittedSummary?)? = null,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
@@ -1965,8 +1967,10 @@ private fun ContextItem(
     var sheet by remember { mutableStateOf(false) }
     // The catalog carries only the branch totals; the live uncommitted list supplies the menu's
     // Uncommitted row and ±, including before the catalog reports a new change.
-    var uncommittedTotals by remember(bar.repository, bar.branch) { mutableStateOf<WorkspaceDiffTotals?>(null) }
-    LaunchedEffect(open, bar.repository, bar.branch) {
+    var uncommittedTotals by remember(bar.repository, bar.branch) { mutableStateOf<UncommittedSummary?>(null) }
+    // Bumped by openMenu(), so a second click while the menu is already open still refetches.
+    var totalsLoad by remember(bar.repository, bar.branch) { mutableIntStateOf(0) }
+    LaunchedEffect(open, totalsLoad, bar.repository, bar.branch) {
         if (!open) return@LaunchedEffect
         uncommittedTotals = try {
             loadUncommittedTotals?.invoke()
@@ -1980,6 +1984,7 @@ private fun ContextItem(
     // Drop the previous open's counts before the menu composes; the effect then loads fresh ones.
     fun openMenu() {
         uncommittedTotals = null
+        totalsLoad++
         open = true
     }
     if (sheet && pr != null) PullRequestSheet(PullRequestView.of(bar, pr), verdict, onCopied, panel) { sheet = false }
@@ -2052,7 +2057,7 @@ private fun ContextItem(
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs), verticalAlignment = Alignment.CenterVertically) {
                                 if (uncommitted) {
-                                    uncommittedTotals?.takeIf { it.files > 0 }?.let {
+                                    uncommittedTotals?.takeIf { it.files > 0 }?.totals?.let {
                                         WorkspaceDiffSummary(it.added, it.removed, it.files, type.body.copy(fontFeatureSettings = "tnum"))
                                     }
                                 } else WorkspaceDiffSummary(bar.added, bar.removed, bar.files, type.body.copy(fontFeatureSettings = "tnum"))

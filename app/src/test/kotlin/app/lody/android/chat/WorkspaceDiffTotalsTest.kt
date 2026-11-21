@@ -10,8 +10,11 @@ import org.junit.Test
 class WorkspaceDiffTotalsTest {
     @Test fun sumsEveryFilesLineStats() {
         assertEquals(
-            WorkspaceDiffTotals(added = 7, removed = 3, files = 2),
-            workspaceDiffTotals(
+            UncommittedSummary(
+                files = 2,
+                totals = WorkspaceDiffTotals(added = 7, removed = 3, files = 2),
+            ),
+            uncommittedSummary(
                 listOf(
                     WorkspaceChange("a.ts", added = 5, removed = 2),
                     WorkspaceChange("b.ts", added = 2, removed = 1),
@@ -20,13 +23,32 @@ class WorkspaceDiffTotalsTest {
         )
     }
 
-    @Test fun aFileWithoutBothCountsHidesTheTotal() {
-        assertNull(workspaceDiffTotals(listOf(WorkspaceChange("a.ts", added = 5, removed = 2), WorkspaceChange("a.png"))))
-        assertNull(workspaceDiffTotals(listOf(WorkspaceChange("a.ts", added = 1, removed = null))))
+    @Test fun aFileWithoutBothCountsKeepsTheRowButHidesTheTotal() {
+        assertEquals(
+            UncommittedSummary(files = 2, totals = null),
+            uncommittedSummary(listOf(WorkspaceChange("a.ts", added = 5, removed = 2), WorkspaceChange("a.png"))),
+        )
+        assertEquals(
+            UncommittedSummary(files = 1, totals = null),
+            uncommittedSummary(listOf(WorkspaceChange("a.ts", added = 1, removed = null))),
+        )
+    }
+
+    @Test fun aFileWithoutCountsStillAddsTheUncommittedRow() {
+        val summary = uncommittedSummary(listOf(WorkspaceChange("a.png")))
+        assertEquals(1, summary.files)
+        assertNull(summary.totals)
+        assertEquals(
+            listOf(DiffScope.Uncommitted),
+            workspaceDiffScopes(catalogHasDiff = false, liveFiles = summary.files),
+        )
     }
 
     @Test fun anEmptyListIsZeroFiles() {
-        assertEquals(WorkspaceDiffTotals(added = 0, removed = 0, files = 0), workspaceDiffTotals(emptyList()))
+        assertEquals(
+            UncommittedSummary(files = 0, totals = WorkspaceDiffTotals(added = 0, removed = 0, files = 0)),
+            uncommittedSummary(emptyList()),
+        )
     }
 
     @Test fun theCatalogShowsBothScopes() {

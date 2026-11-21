@@ -4,20 +4,30 @@ import app.lody.android.runtime.DiffScope
 import app.lody.android.runtime.WorkspaceChange
 
 /**
- * The working tree list's totals, summed from the machine's per-file line stats ([files] also
- * counts binary files, whose ± is zero). Null when any file omitted a side, because a partial
- * total would read as the whole change.
+ * The working tree list's row count and, when every file reports both sides, its ± totals.
+ * [files] is the list length, including binary and deferred entries; [totals] is null when any
+ * file omitted a side, because a partial total would read as the whole change.
  */
+internal data class UncommittedSummary(val files: Int, val totals: WorkspaceDiffTotals?)
+
 internal data class WorkspaceDiffTotals(val added: Int, val removed: Int, val files: Int)
 
-internal fun workspaceDiffTotals(files: List<WorkspaceChange>): WorkspaceDiffTotals? {
+internal fun uncommittedSummary(files: List<WorkspaceChange>): UncommittedSummary {
     var added = 0
     var removed = 0
+    var complete = true
     for (file in files) {
-        added += file.added ?: return null
-        removed += file.removed ?: return null
+        val lineAdded = file.added
+        val lineRemoved = file.removed
+        if (lineAdded == null || lineRemoved == null) complete = false else {
+            added += lineAdded
+            removed += lineRemoved
+        }
     }
-    return WorkspaceDiffTotals(added = added, removed = removed, files = files.size)
+    return UncommittedSummary(
+        files = files.size,
+        totals = if (complete) WorkspaceDiffTotals(added = added, removed = removed, files = files.size) else null,
+    )
 }
 
 /**

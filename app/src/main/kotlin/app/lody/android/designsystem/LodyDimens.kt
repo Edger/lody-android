@@ -130,6 +130,8 @@ object LodySize {
     val avatarLg = 40.dp
     val avatarXl = 56.dp
     val composerMin = 48.dp
+    /** The page-colour fade under floating headers; short so it does not cover the first row. */
+    val headerFade = 12.dp
 
     val all: List<Pair<String, Dp>> = listOf(
         "touchTarget" to touchTarget,
@@ -151,6 +153,7 @@ object LodySize {
         "avatarLg" to avatarLg,
         "avatarXl" to avatarXl,
         "composerMin" to composerMin,
+        "headerFade" to headerFade,
     )
 }
 

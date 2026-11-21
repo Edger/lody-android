@@ -48,6 +48,11 @@ test('workspace and file diffs forward their comparison scope to the machine', a
   ]);
 });
 
+test('an arbitrary argument never becomes a machine scope', () => {
+  assert.deepEqual(withDiffScope({ sessionId: 's' }, 'a.ts'), { sessionId: 's' });
+  assert.deepEqual(withDiffScope({ sessionId: 's' }, 'branch'), { sessionId: 's', scope: 'branch' });
+});
+
 test('an omitted scope is not mistaken for the dispatcher signal', async () => {
   const replies = [];
   const dispatch = createDispatcher({}, (reply) => replies.push(reply), {

@@ -47,7 +47,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -662,13 +661,22 @@ internal fun WorkspaceChangesSheet(
     onDismiss: () -> Unit,
     /** The HEAD-against-worktree comparison (`仅未提交`), whose empty list is a real answer. */
     uncommitted: Boolean = false,
+    /** A list the caller already loaded for this scope; reused instead of a second request. */
+    initial: app.lody.android.runtime.WorkspaceChanges.Ready? = null,
 ) {
     val colors = LodyTheme.colors
     val sheet = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var attempt by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
-    var state by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<WorkspaceFiles>(WorkspaceFiles.Loading) }
+    var state by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<WorkspaceFiles>(
+            initial?.let { changes ->
+                WorkspaceFiles.Ready(changes.files.map { ChangedFile(it.path, it.added, it.removed) })
+            } ?: WorkspaceFiles.Loading,
+        )
+    }
     var diffOpen by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(attempt) {
+        if (attempt == 0 && initial != null) return@LaunchedEffect
         diffOpen = false
         state = WorkspaceFiles.Loading
         state = try {
@@ -731,7 +739,6 @@ internal fun WorkspaceChangesSheet(
 
 /** One control-height title row plus the gap below it, which the floating headers reserve. */
 private val SheetHeaderRowHeight = LodySize.controlLg + LodySpacing.sm
-private val SheetHeaderFade = 24.dp
 
 /**
  * The sheet's grab pill. It lives in the sheet's `dragHandle` slot, so dragging it moves the
@@ -765,7 +772,7 @@ private fun WorkspaceSheetHeader(
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
     Row(
-        modifier.fillMaxWidth().sheetHeaderBackdrop()
+        modifier.fillMaxWidth().pageHeaderFade()
             .padding(horizontal = TranscriptMargin).padding(bottom = LodySpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -776,24 +783,6 @@ private fun WorkspaceSheetHeader(
             Text(title, style = type.headline, color = colors.textPrimary)
         }
         WorkspaceRefreshButton(enabled = refreshEnabled, onClick = onRefresh)
-    }
-}
-
-/** Page colour over the header, fading out below it; the same treatment as the conversation header. */
-@Composable
-private fun Modifier.sheetHeaderBackdrop(): Modifier {
-    val base = LodyTheme.colors.bgBase
-    return drawBehind {
-        val fade = SheetHeaderFade.toPx()
-        drawRect(
-            Brush.verticalGradient(
-                0f to base,
-                size.height / (size.height + fade) to base.copy(alpha = 0.92f),
-                1f to base.copy(alpha = 0f),
-                endY = size.height + fade,
-            ),
-            size = androidx.compose.ui.geometry.Size(size.width, size.height + fade),
-        )
     }
 }
 
@@ -1026,7 +1015,7 @@ private fun DiffPageHeader(
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
     Row(
-        modifier.fillMaxWidth().sheetHeaderBackdrop()
+        modifier.fillMaxWidth().pageHeaderFade()
             .padding(end = TranscriptMargin).padding(bottom = LodySpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {

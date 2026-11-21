@@ -1,4 +1,6 @@
 // The dispatcher calls an adapter as `(...nativeArgs, signal)`, so an omitted optional argument
-// leaves the AbortSignal in its position. Only a string is a machine comparison scope.
+// leaves the AbortSignal in its position. Accept only the machine's comparison scopes, never an
+// arbitrary string from a misplaced argument.
+const DIFF_SCOPES = new Set(['branch', 'uncommitted']);
 export const withDiffScope = (params, scope) =>
-  typeof scope === 'string' ? { ...params, scope } : params;
+  DIFF_SCOPES.has(scope) ? { ...params, scope } : params;
