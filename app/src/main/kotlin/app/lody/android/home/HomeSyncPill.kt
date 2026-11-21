@@ -49,10 +49,32 @@ import kotlinx.coroutines.delay
 /** Catalog connection as Home shows it: nothing while live. */
 enum class HomeSyncState { Live, Syncing, Connecting }
 
-private enum class Shown { Syncing, Connecting, Recovered }
+/** What the pill shows; null while live. */
+internal enum class HomeSyncShown { Syncing, Connecting, Recovered }
 
 /** How long "Connected" stays after trouble clears, as on web. */
 private const val RECOVERED_MILLIS = 1_200L
+
+/**
+ * The pill's shown state, owned by the screen so the workspace capsule can collapse while it is
+ * up (iOS `InboxChrome.syncShown`): syncing / connecting, then a brief "Connected" flash.
+ */
+@Composable
+internal fun rememberHomeSyncShown(state: HomeSyncState): HomeSyncShown? {
+    var shown by remember { mutableStateOf<HomeSyncShown?>(null) }
+    LaunchedEffect(state) {
+        when (state) {
+            HomeSyncState.Syncing -> shown = HomeSyncShown.Syncing
+            HomeSyncState.Connecting -> shown = HomeSyncShown.Connecting
+            HomeSyncState.Live -> if (shown != null && shown != HomeSyncShown.Recovered) {
+                shown = HomeSyncShown.Recovered
+                delay(RECOVERED_MILLIS)
+                shown = null
+            }
+        }
+    }
+    return shown
+}
 
 /**
  * Centred floating status over the Home top bar. Syncing and reconnecting show a spinner (the
@@ -60,19 +82,7 @@ private const val RECOVERED_MILLIS = 1_200L
  * recovery shows "Connected" briefly before the pill leaves. It takes no touches.
  */
 @Composable
-fun HomeSyncPill(state: HomeSyncState, modifier: Modifier = Modifier) {
-    var shown by remember { mutableStateOf<Shown?>(null) }
-    LaunchedEffect(state) {
-        when (state) {
-            HomeSyncState.Syncing -> shown = Shown.Syncing
-            HomeSyncState.Connecting -> shown = Shown.Connecting
-            HomeSyncState.Live -> if (shown != null && shown != Shown.Recovered) {
-                shown = Shown.Recovered
-                delay(RECOVERED_MILLIS)
-                shown = null
-            }
-        }
-    }
+internal fun HomeSyncPill(shown: HomeSyncShown?, modifier: Modifier = Modifier) {
     AnimatedContent(
         targetState = shown,
         modifier = modifier,
@@ -86,12 +96,12 @@ fun HomeSyncPill(state: HomeSyncState, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun Pill(shown: Shown) {
+private fun Pill(shown: HomeSyncShown) {
     val colors = LodyTheme.colors
     val (label, tint) = when (shown) {
-        Shown.Syncing -> stringResource(R.string.home_syncing) to colors.textSecondary
-        Shown.Connecting -> stringResource(R.string.home_connecting) to colors.textSecondary
-        Shown.Recovered -> stringResource(R.string.home_connected) to colors.successDefault
+        HomeSyncShown.Syncing -> stringResource(R.string.home_syncing) to colors.textSecondary
+        HomeSyncShown.Connecting -> stringResource(R.string.home_connecting) to colors.textSecondary
+        HomeSyncShown.Recovered -> stringResource(R.string.home_connected) to colors.successDefault
     }
     Row(
         modifier = Modifier
@@ -105,8 +115,8 @@ private fun Pill(shown: Shown) {
         horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
     ) {
         when (shown) {
-            Shown.Syncing, Shown.Connecting -> app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.xs), color = colors.textSecondary)
-            Shown.Recovered -> Icon(LodyIcons.Check, contentDescription = null, tint = colors.successDefault, modifier = Modifier.size(LodyIconSize.xs))
+            HomeSyncShown.Syncing, HomeSyncShown.Connecting -> app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.xs), color = colors.textSecondary)
+            HomeSyncShown.Recovered -> Icon(LodyIcons.Check, contentDescription = null, tint = colors.successDefault, modifier = Modifier.size(LodyIconSize.xs))
         }
         Text(label, style = LodyTheme.typography.footnote, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }

@@ -71,7 +71,13 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.ui.platform.LocalDensity
 import app.lody.android.designsystem.LodyMotion
 import androidx.compose.foundation.lazy.LazyColumn
@@ -253,6 +259,8 @@ fun ChatListScreen(
     var githubOpen by rememberSaveable(scope) { mutableStateOf(false) }
     var projectsOpen by rememberSaveable(scope) { mutableStateOf(false) }
     val deferredMessage = stringResource(R.string.settings_deferred)
+    // The screen owns the pill's shown state so the workspace capsule can collapse with it.
+    val syncShown = rememberHomeSyncShown(state.sync)
     var scheduleEditor by rememberSaveable(scope) { mutableStateOf<String?>(null) }
     LaunchedEffect(tab, scheduleList, state.sync) {
         if (tab == HomeTab.Schedules) scheduleList?.refresh()
@@ -388,17 +396,17 @@ fun ChatListScreen(
             when {
                 searching -> SearchTopBar(query, onQueryChange = { query = it }, onClose = closeSearch)
                 tab == HomeTab.Chats -> Box {
-                    HomeTopBar(state, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace) {
+                    HomeTopBar(state, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace, collapsed = syncShown != null) {
                         ViewMenu(homeScope, selectScope, grouping, selectGrouping, details, toggleDetail, archived) { archived = it }
                     }
-                    HomeSyncPill(state.sync, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
+                    HomeSyncPill(syncShown, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
                 }
                 // Schedules keeps the Chats header (workspace, sync, search) with its own view menu.
                 tab == HomeTab.Schedules -> Box {
-                    HomeTopBar(state, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace) {
+                    HomeTopBar(state, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace, collapsed = syncShown != null) {
                         ScheduleViewMenu(showFinished) { showFinished = it }
                     }
-                    HomeSyncPill(state.sync, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
+                    HomeSyncPill(syncShown, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
                 }
                 else -> TitleTopBar(stringResource(tab.label), onBack = null)
             }
@@ -483,12 +491,13 @@ private fun HomeTopBar(
     state: ChatListUiState,
     onSearch: () -> Unit,
     onSelectWorkspace: (Workspace) -> Unit,
+    collapsed: Boolean = false,
     menu: @Composable () -> Unit,
 ) {
     val colors = LodyTheme.colors
     TopAppBar(
         windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
-        title = { WorkspaceCapsule(state, onSelectWorkspace) },
+        title = { WorkspaceCapsule(state, onSelectWorkspace, collapsed = collapsed) },
         actions = {
             val search = stringResource(R.string.home_search)
             IconButton(onClick = onSearch, modifier = Modifier.semantics { contentDescription = search }) {
@@ -519,33 +528,48 @@ private fun TitleTopBar(title: String, onBack: (() -> Unit)?) {
     )
 }
 
-/** Workspace logo + name; tapping switches workspace. Connection state floats in [HomeSyncPill] instead. */
+/**
+ * Workspace logo + name; tapping switches workspace. Connection state floats in [HomeSyncPill]
+ * instead, so the entry collapses to a circular logo while the pill is up (as iOS).
+ */
 @Composable
-private fun WorkspaceCapsule(state: ChatListUiState, onSelect: (Workspace) -> Unit) {
+private fun WorkspaceCapsule(state: ChatListUiState, onSelect: (Workspace) -> Unit, collapsed: Boolean) {
     val colors = LodyTheme.colors
     var open by remember { mutableStateOf(false) }
     val label = stringResource(R.string.home_account)
+    val endPadding by animateDpAsState(
+        targetValue = if (collapsed) 0.dp else LodySpacing.md,
+        animationSpec = tween(LodyMotion.baseMillis, easing = LodyMotion.standard),
+        label = "workspaceCapsuleEnd",
+    )
     Box {
         Row(
             modifier = Modifier
                 .clip(CircleShape)
                 .clickable(role = Role.Button) { open = true }
                 .semantics { contentDescription = "$label, ${state.workspaceName}" }
-                .padding(end = LodySpacing.md),
+                .padding(end = endPadding),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
         ) {
             // The workspace's real logo once loaded, its initial until then (as iOS).
             Avatar(state.workspaceImage, state.initial, LodySize.avatarMd)
-            // Capped so a long name ellipsizes before the centred sync pill.
-            Text(
-                state.workspaceName,
-                style = LodyTheme.typography.headline,
-                color = colors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = LodyLayout.trailingMetaMaxWidth),
-            )
+            // The name steps aside while the centred sync pill is up; its padding leaves with it so
+            // the collapsed entry is a circle.
+            AnimatedVisibility(
+                visible = !collapsed,
+                enter = fadeIn(tween(LodyMotion.baseMillis)) + expandHorizontally(tween(LodyMotion.baseMillis, easing = LodyMotion.standard)),
+                exit = fadeOut(tween(LodyMotion.fastMillis)) + shrinkHorizontally(tween(LodyMotion.baseMillis, easing = LodyMotion.standard)),
+            ) {
+                // Capped so a long name ellipsizes before the centred sync pill.
+                Text(
+                    state.workspaceName,
+                    style = LodyTheme.typography.headline,
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = LodySpacing.sm).widthIn(max = LodyLayout.trailingMetaMaxWidth),
+                )
+            }
         }
         // A menu-width panel (iOS #2574 / #2586): 200–260 dp, each name on one line fading out at
         // its trailing edge, never wrapping.
