@@ -649,6 +649,8 @@ internal fun WorkspaceChangesSheet(
     loadChanges: suspend () -> app.lody.android.runtime.WorkspaceChanges,
     loadDiff: suspend (path: String) -> app.lody.android.runtime.FileDiff,
     onDismiss: () -> Unit,
+    /** The HEAD-against-worktree comparison (`仅未提交`), whose empty list is a real answer. */
+    uncommitted: Boolean = false,
 ) {
     val colors = LodyTheme.colors
     val sheet = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -683,7 +685,10 @@ internal fun WorkspaceChangesSheet(
                         Modifier.weight(1f).padding(start = LodySize.controlLg),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(stringResource(R.string.workspace_changes_title), style = LodyTheme.typography.headline, color = colors.textPrimary)
+                        Text(
+                            stringResource(if (uncommitted) R.string.workspace_changes_title_uncommitted else R.string.workspace_changes_title),
+                            style = LodyTheme.typography.headline, color = colors.textPrimary,
+                        )
                     }
                     WorkspaceRefreshButton(enabled = state !is WorkspaceFiles.Loading) { attempt++ }
                 }
@@ -702,7 +707,13 @@ internal fun WorkspaceChangesSheet(
                         style = LodyTheme.typography.subhead, color = colors.textSecondary,
                     )
                 }
-                is WorkspaceFiles.Ready -> ChangedFilesContent(
+                is WorkspaceFiles.Ready -> if (uncommitted && current.files.isEmpty()) {
+                    Text(
+                        stringResource(R.string.chat_diff_no_uncommitted_changes),
+                        style = LodyTheme.typography.subhead, color = colors.textSecondary,
+                        modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+                    )
+                } else ChangedFilesContent(
                     current.files,
                     loadDiff,
                     Modifier.fillMaxWidth().weight(1f),

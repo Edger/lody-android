@@ -398,7 +398,12 @@
         <item quantity="other">⋯ %d 行未改动</item>
     </plurals>
     <string name="bar_workspace_changes">所有变更</string>
+    <string name="bar_workspace_changes_uncommitted">仅未提交</string>
     <string name="workspace_changes_title">工作区变更</string>
+    <string name="workspace_changes_title_uncommitted">未提交的变更</string>
+    <string name="chat_diff_no_uncommitted_changes">没有未提交的修改。</string>
+    <string name="chat_diff_scope_not_git">仅未提交对比需要 Git 工作区。</string>
+    <string name="chat_diff_scope_no_commits">该工作区还没有提交，因此没有可对比的 HEAD。</string>
     <string name="workspace_changes_refresh">刷新工作区变更</string>
     <string name="create_machine_no_agents">无可用助手</string>
     <string name="mention_files">文件与目录</string>

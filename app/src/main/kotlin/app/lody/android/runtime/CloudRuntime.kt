@@ -17,6 +17,17 @@ interface CloudRuntime {
 data class RuntimeScope(val accountId: String, val workspaceId: String) {
     init { require(accountId.isNotBlank() && workspaceId.isNotBlank()); require(accountId.length <= 128 && workspaceId.length <= 128) }
 }
+/**
+ * What an all-changes or file diff compares. [Branch] is the merge base against the working tree
+ * (committed and uncommitted work) and is the machine default, so [wire] is null and it is not sent
+ * to machines that predate the `scope` field; [Uncommitted] is HEAD against the working tree
+ * (staged, unstaged and untracked work).
+ */
+enum class DiffScope(val wire: String?) {
+    Branch(null),
+    Uncommitted("uncommitted"),
+}
+
 sealed interface RuntimeCommand {
     data class ProviderDetail(val machineId: String, val id: String) : RuntimeCommand
     /** [readModelOptions] switches the agent through every model (Refresh models and modes). */
@@ -54,9 +65,9 @@ sealed interface RuntimeCommand {
     /** One changed file's diff for one turn, from the session's computer. Read only. */
     data class TurnDiff(val sessionId: String, val entryId: String, val path: String) : RuntimeCommand
     /** Every file the working tree changed, from the session's computer (upstream `workspaceChanges`). Read only. */
-    data class WorkspaceChanges(val sessionId: String) : RuntimeCommand
+    data class WorkspaceChanges(val sessionId: String, val scope: DiffScope? = null) : RuntimeCommand
     /** One changed file's current diff against its base (upstream `fileDiff`). Read only. */
-    data class FileDiff(val sessionId: String, val path: String) : RuntimeCommand
+    data class FileDiff(val sessionId: String, val path: String, val scope: DiffScope? = null) : RuntimeCommand
     /**
      * One folder of the session's local project ([relativePath] from the project root, "" for the
      * root), from the session's computer (upstream `listDir`). Read only.

@@ -78,16 +78,16 @@ class ChatRepository(
     catch (error: Exception) { logDiffFailure(sessionId, path, null, error); throw error }
 
     /** Every file the working tree changed, read from the session's computer; safe to retry. */
-    suspend fun workspaceChanges(scope: RuntimeScope, sessionId: String): WorkspaceChanges = try {
-        val value = owner.use(scope) { (it.execute(RuntimeCommand.WorkspaceChanges(sessionId)) as RuntimeResult.WorkspaceChanges).value }
+    suspend fun workspaceChanges(scope: RuntimeScope, sessionId: String, diffScope: DiffScope): WorkspaceChanges = try {
+        val value = owner.use(scope) { (it.execute(RuntimeCommand.WorkspaceChanges(sessionId, diffScope)) as RuntimeResult.WorkspaceChanges).value }
         if (value is WorkspaceChanges.Unavailable) logDiffFailure(sessionId, null, value.reason)
         value
     } catch (cancelled: CancellationException) { throw cancelled }
     catch (error: Exception) { logDiffFailure(sessionId, null, null, error); throw error }
 
     /** One changed file's current diff against its base, read from the session's computer; safe to retry. */
-    suspend fun fileDiff(scope: RuntimeScope, sessionId: String, path: String): FileDiff = try {
-        val value = owner.use(scope) { (it.execute(RuntimeCommand.FileDiff(sessionId, path)) as RuntimeResult.Diff).value }
+    suspend fun fileDiff(scope: RuntimeScope, sessionId: String, path: String, diffScope: DiffScope): FileDiff = try {
+        val value = owner.use(scope) { (it.execute(RuntimeCommand.FileDiff(sessionId, path, diffScope)) as RuntimeResult.Diff).value }
         value.unavailable?.let { logDiffFailure(sessionId, path, it) }
         value
     } catch (cancelled: CancellationException) { throw cancelled }

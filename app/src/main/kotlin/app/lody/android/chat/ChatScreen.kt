@@ -729,12 +729,15 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     )
     // Hosted by the screen, not the action bar: a catalog refresh can change which bar layout
     // fits (a running turn empties its actions), and must not unmount an open sheet.
-    var workspaceChangesOpen by remember(id) { mutableStateOf(false) }
-    if (workspaceChangesOpen) WorkspaceChangesSheet(
-        loadChanges = { repository.workspaceChanges(scope, id) },
-        loadDiff = { path -> repository.fileDiff(scope, id, path) },
-        onDismiss = { workspaceChangesOpen = false },
-    )
+    var workspaceChangesScope by remember(id) { mutableStateOf<DiffScope?>(null) }
+    workspaceChangesScope?.let { diffScope ->
+        WorkspaceChangesSheet(
+            loadChanges = { repository.workspaceChanges(scope, id, diffScope) },
+            loadDiff = { path -> repository.fileDiff(scope, id, path, diffScope) },
+            uncommitted = diffScope == DiffScope.Uncommitted,
+            onDismiss = { workspaceChangesScope = null },
+        )
+    }
     previewFile?.let { path ->
         ProjectFilesSheet(
             listDir = { relative -> repository.listDir(scope, id, relative) },
@@ -1082,7 +1085,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                     pullRequestBusy = writing != null && bar.pullRequest?.let(prUpdates::writes) == true,
                     pullRequestPanel = pullRequestPanel,
                     panelFor = panelFor,
-                    onOpenWorkspaceChanges = { workspaceChangesOpen = true },
+                    onOpenWorkspaceChanges = { workspaceChangesScope = it },
                     relations = if (hasRelations) ({ SessionRelationsChip(id, context.relatedSessions, onSelectTab) }) else null,
                     devices = if (devicePlatforms.isNotEmpty()) ({
                         devicePlatforms.forEach { platform ->
@@ -1745,8 +1748,8 @@ internal fun ChatActionBar(
     pullRequestPanel: PullRequestPanel? = null,
     /** The PR panel for any PR; a Project group member's PR opens with its own. */
     panelFor: ((CatalogPullRequest) -> PullRequestPanel)? = null,
-    /** Opens the working tree's changed files for this conversation. */
-    onOpenWorkspaceChanges: (() -> Unit)? = null,
+    /** Opens the working tree's changed files for this conversation, for one comparison scope. */
+    onOpenWorkspaceChanges: ((DiffScope) -> Unit)? = null,
 ) {
     val context = bar.group != null || bar.pullRequest != null || bar.branch.isNotEmpty() || bar.repository.isNotEmpty()
     val diff = bar.hasDiff
@@ -1905,7 +1908,7 @@ private fun ContextItem(
     modifier: Modifier = Modifier,
     busy: Boolean = false,
     labelMax: Dp = 160.dp,
-    onOpenWorkspaceChanges: (() -> Unit)? = null,
+    onOpenWorkspaceChanges: ((DiffScope) -> Unit)? = null,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
@@ -1942,7 +1945,7 @@ private fun ContextItem(
                 val style = type.subhead.copy(fontFeatureSettings = "tnum")
                 WorkspaceDiffSummary(bar, style)
             }
-            val optionCount = (if (pr != null) 1 else 0) + (if (diff) 1 else 0) + (if (bar.branch.isNotEmpty()) 1 else 0)
+            val optionCount = (if (pr != null) 1 else 0) + (if (diff) DiffScope.entries.size else 0) + (if (bar.branch.isNotEmpty()) 1 else 0)
             if (optionCount > 1) {
                 Icon(LodyIcons.Expand, contentDescription = null, tint = colors.iconSecondary, modifier = Modifier.size(LodyIconSize.sm))
             }
@@ -1980,19 +1983,27 @@ private fun ContextItem(
                 )
             }
             if (diff) {
-                DropdownMenuItem(
-                    text = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(stringResource(R.string.bar_workspace_changes), style = type.body, modifier = Modifier.width(100.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs)) {
-                                WorkspaceDiffSummary(bar, type.body.copy(fontFeatureSettings = "tnum"))
+                DiffScope.entries.forEach { diffScope ->
+                    val uncommitted = diffScope == DiffScope.Uncommitted
+                    DropdownMenuItem(
+                        text = {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    stringResource(if (uncommitted) R.string.bar_workspace_changes_uncommitted else R.string.bar_workspace_changes),
+                                    style = type.body,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs), verticalAlignment = Alignment.CenterVertically) {
+                                    if (!uncommitted) WorkspaceDiffSummary(bar, type.body.copy(fontFeatureSettings = "tnum"))
+                                    Icon(LodyIcons.Forward, contentDescription = null, tint = colors.iconTertiary, modifier = Modifier.size(LodyIconSize.sm))
+                                }
                             }
-                        }
-                    },
-                    leadingIcon = { Icon(LodyIcons.Diff, contentDescription = null, tint = colors.iconSecondary, modifier = Modifier.size(LodyIconSize.md)) },
-                    onClick = { open = false; onOpenWorkspaceChanges?.invoke() },
-                    enabled = onOpenWorkspaceChanges != null,
-                )
+                        },
+                        leadingIcon = { Icon(LodyIcons.Diff, contentDescription = null, tint = colors.iconSecondary, modifier = Modifier.size(LodyIconSize.md)) },
+                        onClick = { open = false; onOpenWorkspaceChanges?.invoke(diffScope) },
+                        enabled = onOpenWorkspaceChanges != null,
+                    )
+                }
             }
         }
     }

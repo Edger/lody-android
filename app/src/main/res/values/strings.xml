@@ -400,7 +400,12 @@
         <item quantity="other">⋯ %d unchanged lines</item>
     </plurals>
     <string name="bar_workspace_changes">All changes</string>
+    <string name="bar_workspace_changes_uncommitted">Uncommitted</string>
     <string name="workspace_changes_title">Workspace changes</string>
+    <string name="workspace_changes_title_uncommitted">Uncommitted changes</string>
+    <string name="chat_diff_no_uncommitted_changes">No uncommitted changes.</string>
+    <string name="chat_diff_scope_not_git">Uncommitted comparison requires a Git worktree.</string>
+    <string name="chat_diff_scope_no_commits">This worktree has no commits yet, so there is no HEAD to compare against.</string>
     <string name="workspace_changes_refresh">Refresh workspace changes</string>
     <string name="create_machine_no_agents">No available assistants</string>
     <string name="mention_files">Files and folders</string>

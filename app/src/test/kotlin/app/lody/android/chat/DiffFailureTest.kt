@@ -30,8 +30,10 @@ class DiffFailureTest {
         assertFalse(diffUnavailableRetryable("not_tracked"))
     }
 
-    @Test fun workspaceListOnlyCallsOutAMissingBaseline() {
+    @Test fun workspaceListCallsOutAMissingBaselineOrAnUncomparableWorktree() {
         assertEquals(R.string.chat_diff_no_base, workspaceUnavailableMessage("base_unavailable"))
+        assertEquals(R.string.chat_diff_scope_not_git, workspaceUnavailableMessage("not_a_git_worktree"))
+        assertEquals(R.string.chat_diff_scope_no_commits, workspaceUnavailableMessage("no_commits"))
         assertEquals(R.string.chat_diff_workspace_unavailable, workspaceUnavailableMessage("transient_io"))
         assertEquals(R.string.chat_diff_workspace_unavailable, workspaceUnavailableMessage(null))
     }

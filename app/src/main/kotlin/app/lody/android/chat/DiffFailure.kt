@@ -25,8 +25,12 @@ internal fun diffUnavailableRetryable(reason: String?): Boolean = reason != "uns
 
 /** The list has one actionable reason; everything else is a load/network failure. */
 @StringRes
-internal fun workspaceUnavailableMessage(reason: String?): Int =
-    if (reason == "base_unavailable") R.string.chat_diff_no_base else R.string.chat_diff_workspace_unavailable
+internal fun workspaceUnavailableMessage(reason: String?): Int = when (reason) {
+    "base_unavailable" -> R.string.chat_diff_no_base
+    "not_a_git_worktree" -> R.string.chat_diff_scope_not_git
+    "no_commits" -> R.string.chat_diff_scope_no_commits
+    else -> R.string.chat_diff_workspace_unavailable
+}
 
 /** One debug-only log line: which session and path failed, and the reason or runtime fault. */
 internal fun diffFailureLog(sessionId: String, path: String?, reason: String?, error: Throwable? = null): String = buildString {

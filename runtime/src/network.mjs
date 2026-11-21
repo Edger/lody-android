@@ -13,6 +13,7 @@ import {roleCommands} from './role-commands.mjs';
 import {shortcutCommands} from './shortcut-commands.mjs';
 import {scheduleCommands} from './schedule-commands.mjs';
 import {proposalCommands} from './proposal-commands.mjs';
+import {withDiffScope} from './diff-commands.mjs';
 const emit=message=>globalThis.webkit.messageHandlers.dataRuntime.postMessage(message);
 const access=createReadAccess(globalThis.fetch.bind(globalThis),emit);
 globalThis.fetch=access.fetch;
@@ -45,8 +46,9 @@ const detail={
  forgetPendingInput:(sessionId,inputId)=>runtime.forgetPendingInput({sessionId,inputId}),
  itemDetail:(sessionId,entryId,itemId)=>itemDetail({sessionId,entryId,itemId}),turnDiff:(sessionId,entryId,path)=>runtime.turnDiff({sessionId,entryId,path}),
  // Working tree changes: every changed file, and one file's current text against its base. Reads only.
- workspaceChanges:sessionId=>runtime.workspaceChanges({sessionId}),
- fileDiff:(sessionId,path)=>runtime.fileDiff({sessionId,path}),
+ // `scope` is the machine's `uncommitted` comparison; omitting it keeps the default branch range.
+ workspaceChanges:(sessionId,scope)=>runtime.workspaceChanges(withDiffScope({sessionId},scope)),
+ fileDiff:(sessionId,path,scope)=>runtime.fileDiff(withDiffScope({sessionId,path},scope)),
  // Browse files: a folder of the session's local project (relative to its root) and a file's contents (relative to the session's directory). Reads only.
  listDir:(sessionId,relativePath)=>{const scope=identity;if(!scope)throw Error('not_connected');return runtime.listDir({workspaceId:scope.workspaceId,sessionId,relativePath,userId:scope.userId});},
  readFile:(sessionId,path)=>runtime.readFile({sessionId,path}),
