@@ -123,6 +123,6 @@
   "src/runtime/sharing/session-share-package.ts": "d18f795c2c4c41ea531251b79567722f69d1637a926469b30ea0ce1a6b8ff5f0",
   "src/runtime/upstream-roost-history.ts": "0eda29a3253a8b778fc6d232c34b55f2a528045d5838104bcf93e73253fcb8df",
   "src/runtime/upstream-roost.d.ts": "fa2793564e02bd5256f35c60251593bf2e91b02d8c45f54ed07d039c9bdcfe1c",
-  "src/runtime/upstream-roost.js": "465c892b2cf6d7c60d4ced2ef02d5ba29ec5f716921b04723484346dd6a12cc5",
+  "src/runtime/upstream-roost.js": "e04bc8e1f914cc07a1ab2a3f6a825f93f3f3033cc82050f8a275b5ae0bbfb97b",
   "tsconfig.json": "b3cdc3632cd4c48e21040f29bb967ddda7a02e40aa50b71d47c82dfa7c2d3e09"
 }
