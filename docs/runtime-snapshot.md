@@ -28,6 +28,14 @@ before the shared send, so quotes are written once. The catalog-budget harness e
 `watch` / `publish` from `src/runtime/index.ts`, so it supplies their module constants and
 Status view inputs explicitly.
 
+Every WebView document (`runtime/src/{main,debug,network}.mjs`) first imports the vendored
+`src/runtime/platform-fallbacks.ts` (`AbortSignal.any`, Chrome 116; `URL.canParse`, Chrome 120),
+then Android's own `AbortSignal.timeout` fallback (`runtime/src/abort-signal-timeout.mjs`,
+Chrome 103; iOS needs none). The bundles target Chrome 100. Each fallback installs only where
+the API is missing; the individual fallback modules only export, so a document must import
+`platform-fallbacks.ts`, not them. `runtime/test/network-document.test.mjs` bundles the network
+document with all three deleted, reads through its guarded fetch and checks `URL.canParse`.
+
 The current runtime pins Flock 0.5.0, Streams Client 0.13.1, Streams CRDT
 0.21.1 and Loro 1.17.0, matching the root workspace and iOS decoder.
 Control requests and durable uploads each retain a 15-second budget, with
