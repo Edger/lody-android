@@ -1,9 +1,9 @@
 {
   "source": "LodyAI/lody-ios packages/cloud-runtime",
-  "commit": "856be669047a10a07974b672597943b797bb9e3d",
+  "commit": "7e0fd36042d9ac196063523375101403e6d17657",
   "license": "AGPL-3.0-only",
   "path": "packages/cloud-runtime",
-  "export": "git -C apps/mobile/ios archive 856be669047a10a07974b672597943b797bb9e3d packages/cloud-runtime",
+  "export": "git -C apps/mobile/ios archive 7e0fd36042d9ac196063523375101403e6d17657 packages/cloud-runtime",
   "note": "Complete snapshot of the pinned iOS cloud-runtime package, excluding Roost authoring source and its generator. SHA256.json records every mirrored file. Earlier entries retain the source-update history.",
   "roostHistory": {
     "files": [
@@ -284,5 +284,14 @@
       "src/runtime/settings.ts"
     ],
     "note": "Prompt Shortcuts migrate to workspace UserSpace streams (`<workspace>:shortcut-index` and `<workspace>:shortcut:<id>`) using the cached workspace Loro Streams token, remove `visibility` (`Share with workspace`) while stripping legacy stored `visibility`, update shortcut body documents in place without rotating `bodyDocId`, and retain Phase 1 read-only fallback to legacy `shortcut-index:*` and `shortcut-body:*` streams. Dependencies and licenses are unchanged."
+  },
+  "roostPermissionReadiness": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "7e0fd36042d9ac196063523375101403e6d17657",
+    "files": [
+      "README.md",
+      "src/runtime/session.ts"
+    ],
+    "note": "Roost permission answers use command readiness, so they remain available on the installed transcript while the history subscription reconnects. The owner still rejects stale or answered requests. Dependencies and licenses are unchanged."
   }
 }

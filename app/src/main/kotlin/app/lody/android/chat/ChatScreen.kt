@@ -1001,8 +1001,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                         loadDiff = { entryId, path -> repository.turnDiff(scope, id, entryId, path) },
                         meId = context.me?.id,
                         decideProposal = { card, accept -> repository.decideProposal(scope, id, card.entryId, card.itemId, accept) },
-                        // Only a live, open conversation takes an answer; otherwise the approval just waits.
-                        respondPermission = if (status == "live" && context.session?.isTabClosed != true) ({ entryId, itemId, requestId, optionId, answers ->
+                        // An open conversation takes an answer once commands are ready, including during a Roost history reconnect; otherwise the approval just waits.
+                        respondPermission = if (controlReady && context.session?.isTabClosed != true) ({ entryId, itemId, requestId, optionId, answers ->
                             repository.respondPermission(scope, id, entryId, itemId, requestId, optionId, answers)
                         }) else null,
                     ) }

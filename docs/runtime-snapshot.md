@@ -61,8 +61,8 @@ session module with a synthetic Streams peer.
 Roost reports a live session after both the control stream and owner history
 are ready. A failed read only clears its own reader's readiness until it recovers.
 The composer takes command readiness from the runtime projection. A readable
-Roost window and a caught-up control stream allow Stop and Steer while the
-history subscription reconnects. Send also needs the history metadata.
+Roost window and a caught-up control stream allow Stop, Steer and permission
+answers while the history subscription reconnects. Send also needs the history metadata.
 
 Roost proposal decisions write the outcome through the owner's shared
 `replaceTurn` command, as on Web. The Loro path continues to append the notice
