@@ -92,20 +92,29 @@ const publishSubscriptions = () =>
 let grant: Grant | undefined,
   expiresAt = 0;
 let grantPending: Promise<Grant> | undefined;
-async function getGrant() {
-  if (grant && Date.now() < expiresAt) return grant;
-  grantPending ??= channel
-    .request('grant', {})
-    .then((value) => {
-      grant = value;
-      expiresAt = Date.now() + Math.max(1, value.expiresIn - 30) * 1000;
-      return value;
-    })
-    .finally(() => {
-      grantPending = undefined;
-    });
-  return grantPending;
+function invalidateGrant(failedToken?: string) {
+  if (!failedToken || grant?.token === failedToken) {
+    grant = undefined;
+    expiresAt = 0;
+  }
 }
+const getGrant = Object.assign(
+  async function getGrant() {
+    if (grant && Date.now() < expiresAt) return grant;
+    grantPending ??= channel
+      .request('grant', {})
+      .then((value) => {
+        grant = value;
+        expiresAt = Date.now() + Math.max(1, value.expiresIn - 30) * 1000;
+        return value;
+      })
+      .finally(() => {
+        grantPending = undefined;
+      });
+    return grantPending;
+  },
+  { invalidate: invalidateGrant },
+);
 const delay = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -620,6 +629,7 @@ function watch(mode: string) {
           // A failed read has not imported bytes or advanced the cursor. Keep
           // that verified replica through transport loss and host suspension.
           // Protocol/cursor failures still leave this loop for a fresh bootstrap.
+          let livePoll = upToDate;
           const response = await retrySessionRead(
             signal,
             async () => {
@@ -627,7 +637,7 @@ function watch(mode: string) {
                 offset,
                 cursor,
                 signal,
-                ...(upToDate ? { live: 'long-poll' as const } : {}),
+                ...(livePoll ? { live: 'long-poll' as const } : {}),
               });
               if (!result.ok) {
                 const error = result.result;
@@ -654,6 +664,7 @@ function watch(mode: string) {
               return result;
             },
             (error) => {
+              livePoll = false;
               markUnhealthy();
               channel.emit('creationOptionsChanged', {});
               reportError('network_or_auth');
@@ -758,7 +769,7 @@ const ctx: RuntimeContext = {
     watchers.delete(WORKSPACE_STREAM);
     watch(WORKSPACE_STREAM);
   },
-  syncClock: () => serverClock.sync(),
+  syncClock: () => serverClock.sync(undefined, 60_000),
   setForeground(active) {
     foreground = active;
     if (!active) scheduleStatusRefresh(null);

@@ -8,6 +8,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -86,7 +88,7 @@ import kotlinx.coroutines.launch
 data class TurnIdentity(val name: String, val image: String? = null, val time: String = "")
 
 /** A user turn's delivery as web's `UserMessageSendStatus` shows it. */
-enum class Delivery { Sending, Sent, Queued, Seen, Failed, Unknown }
+enum class Delivery { Waiting, Sending, Sent, Queued, Seen, Failed, Unknown }
 
 /** A transcript entry. Assistant replies render as Markdown blocks; user turns as plain text. */
 sealed interface ChatEntry {
@@ -430,6 +432,7 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
                 horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
             ) {
                 DeliveryMark(entry.delivery)
+                if (entry.delivery == Delivery.Waiting) Text(stringResource(R.string.chat_delivery_waiting_connection), style = LodyTheme.typography.footnote, color = colors.textTertiary, maxLines = 1)
                 if (entry.delivery == Delivery.Unknown) Text(stringResource(R.string.chat_delivery_unknown), style = LodyTheme.typography.footnote, color = colors.textTertiary, maxLines = 1)
                 if (entry.who.time.isNotEmpty()) Text(entry.who.time, style = LodyTheme.typography.footnote, color = colors.textTertiary, maxLines = 1)
                 Text(entry.who.name, style = LodyTheme.typography.footnote, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -452,7 +455,16 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
                     horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs, Alignment.End),
                     verticalArrangement = Arrangement.spacedBy(LodySpacing.xs),
                 ) {
-                    entry.attachments.forEach { AttachmentChip(it.name, it.image) }
+                    val files = LocalSessionFiles.current
+                    entry.attachments.forEach { attachment ->
+                        val file = attachment.file
+                        val opens = files != null && file != null
+                        AttachmentChip(
+                            attachment.name, attachment.image,
+                            if (opens) Modifier.clip(RoundedCornerShape(LodyRadius.md)).clickable(role = Role.Button) { files!!.open(file!!) } else Modifier,
+                            trailing = if (opens && file!!.id in files!!.busy) ({ app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.sm), color = LodyTheme.colors.iconTertiary) }) else null,
+                        )
+                    }
                 }
             }
             val bubble = Modifier
@@ -462,14 +474,19 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
             val lines = if (expanded) Int.MAX_VALUE else 6
             if (entry.quotes.isEmpty()) {
                 if (entry.text.isNotBlank()) ReferenceText(entry.text, entry.references, lines, { if (!expanded) overflowing = it }, bubble)
-            } else Column(bubble, verticalArrangement = Arrangement.spacedBy(LodySpacing.md)) {
+            } else Column(bubble) {
                 // Quote blocks read as their snapshot (bar, secondary ink, three lines); a tap opens it whole.
-                segments.forEach { segment ->
+                segments.forEachIndexed { index, segment ->
+                    val gap = Modifier.padding(top = when {
+                        index == 0 -> 0.dp
+                        segment is MessageQuotes.Segment.Plain && segment.comment -> LodySpacing.xs
+                        else -> LodySpacing.md
+                    })
                     when (segment) {
-                        is MessageQuotes.Segment.Plain -> ReferenceText(segment.text, segment.references, lines, { if (!expanded && it) overflowing = true })
+                        is MessageQuotes.Segment.Plain -> ReferenceText(segment.text, segment.references, lines, { if (!expanded && it) overflowing = true }, gap)
                         is MessageQuotes.Segment.Quote -> QuoteSnapshot(
                             segment.snapshot,
-                            Modifier.clip(RoundedCornerShape(LodyRadius.sm)).combinedClickable(onClick = { selecting = segment.snapshot }, onLongClick = { menu = true }),
+                            gap.clip(RoundedCornerShape(LodyRadius.sm)).combinedClickable(onClick = { selecting = segment.snapshot }, onLongClick = { menu = true }),
                             maxLines = 3,
                         )
                     }
@@ -585,6 +602,7 @@ private fun DeliveryMark(delivery: Delivery) {
     val size = LodyIconSize.sm
     val label = stringResource(
         when (delivery) {
+            Delivery.Waiting -> R.string.chat_delivery_waiting_connection
             Delivery.Sending -> R.string.chat_delivery_sending
             Delivery.Sent -> R.string.chat_delivery_sent
             Delivery.Queued -> R.string.chat_delivery_queued
@@ -595,7 +613,7 @@ private fun DeliveryMark(delivery: Delivery) {
     )
     val mark = Modifier.size(size).semantics { contentDescription = label }
     when (delivery) {
-        Delivery.Sending -> app.lody.android.designsystem.LodyLoadingIndicator(mark.padding(LodySpacing.xxs), color = colors.iconTertiary)
+        Delivery.Waiting, Delivery.Sending -> app.lody.android.designsystem.LodyLoadingIndicator(mark.padding(LodySpacing.xxs), color = colors.iconTertiary)
         Delivery.Seen -> Icon(LodyIcons.StateDone, contentDescription = label, tint = colors.accentDefault, modifier = Modifier.size(size))
         Delivery.Unknown -> Icon(LodyIcons.Alert, contentDescription = label, tint = colors.iconTertiary, modifier = Modifier.size(size))
         Delivery.Failed -> Icon(LodyIcons.Alert, contentDescription = label, tint = colors.dangerDefault, modifier = Modifier.size(size))
