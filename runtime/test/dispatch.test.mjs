@@ -21,6 +21,23 @@ test('JS rejection becomes a bounded error without leaking exception text', asyn
   await createDispatcher({ping: () => { throw Error('private token'); }}, e => events.push(e))({id:'a',method:'ping'});
   assert.deepEqual(events,[{type:'reply',id:'a',error:'runtime_command_failed'}]);
 });
+test('a runtime fault keeps its own bounded code for diagnostics', async () => {
+  const events = [];
+  const failure = Error('machine rpc failed');
+  failure.code = 'unknown';
+  await createDispatcher({ping: () => { throw failure; }}, e => events.push(e))({id:'a',method:'ping'});
+  assert.deepEqual(events,[{type:'reply',id:'a',error:'runtime_command_failed:unknown'}]);
+});
+test('a transport failure keeps the code it puts in its message', async () => {
+  const events = [];
+  await createDispatcher({ping: () => { throw Error('network_error'); }}, e => events.push(e))({id:'a',method:'ping'});
+  assert.deepEqual(events,[{type:'reply',id:'a',error:'runtime_command_failed:network_error'}]);
+});
+test('an unrecognised exception message never reaches the reply', async () => {
+  const events = [];
+  await createDispatcher({ping: () => { throw Error('some_secret_id'); }}, e => events.push(e))({id:'a',method:'ping'});
+  assert.deepEqual(events,[{type:'reply',id:'a',error:'runtime_command_failed'}]);
+});
 test('diagnostic commands are absent without a debug provider', async () => {
   const events = [];
   await createDispatcher({}, e => events.push(e))({id:'a',method:'compatibility'});
