@@ -2,6 +2,7 @@ package app.lody.android.chat
 
 import app.lody.android.chat.LineDiff.Kind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -84,5 +85,20 @@ class LineDiffTest {
         )
 
         assertEquals(listOf("longest line", "medium"), widestLines(result, count = 2))
+    }
+
+    @Test fun scatteredChangesInALargeFileAreStillDiffed() {
+        // Changes near the top, the middle and the bottom: the trimmed middle spans most of the
+        // 2500-line file, so a plain LCS table would exceed the cell limit even though only three
+        // lines changed.
+        val a = (1..2500).joinToString("\n") { "line $it" }
+        val b = a.split("\n").toMutableList().apply {
+            this[39] = "line forty"
+            this[1199] = "line twelve hundred"
+            this[2449] = "line twenty-four fifty"
+        }.joinToString("\n")
+        val result = LineDiff.compute(a, b)
+        assertFalse(result.tooLarge)
+        assertEquals(3, result.hunks.size)
     }
 }
