@@ -34,7 +34,7 @@ import {
   HistoryEntryWriteSchema,
   parseHistoryWrite,
 } from './upstream-roost.js';
-import { retrySessionRead } from './session-read';
+import { retrySessionRead, wakeSessionReads } from './session-read';
 import { resolveTurnRole, type TurnRole } from './agent-roles';
 import { record, roleRunConfigApplied } from '../protocol/agent-roles';
 import type {
@@ -393,6 +393,10 @@ export function startAcceptedInputs(options: {
 }
 export function resumeAcceptedInputs() {
   void acceptedInputs?.resume().catch(() => {});
+}
+export function resumeSessions() {
+  wakeSessionReads();
+  for (const state of sessions.values()) state.roostReader?.wake();
 }
 export async function stopAcceptedInputs() {
   const owner = acceptedInputs;
@@ -1217,6 +1221,11 @@ export async function openSession(
     event('syncing', error instanceof Error ? error.message : 'sync_failed');
   };
   const retryStream = (error: unknown) => {
+    if (
+      error instanceof Error &&
+      (error.message === 'unauthorized' || error.message === 'forbidden')
+    )
+      (state.getGrant as { invalidate?: () => void }).invalidate?.();
     state.streamReady = false;
     retrying(error);
   };
@@ -1384,26 +1393,43 @@ export async function openSession(
         reader.metadataChanged(state.roostMetadata);
         state.historyReady = true;
         void (async () => {
+          const isSuperseded = (error: unknown) =>
+            error instanceof Error &&
+            (error.message === 'history_observation_superseded' ||
+              error.message === 'Roost history observation was superseded' ||
+              error.message === 'Roost cached page cursor needs rebasing');
+          const retryNonSuperseded = async <T>(work: () => Promise<T>) => {
+            for (let attempt = 0; ; attempt++) {
+              try {
+                return await work();
+              } catch (error) {
+                if (!isSuperseded(error) || attempt >= 3) throw error;
+                controller.signal.throwIfAborted();
+              }
+            }
+          };
           try {
             while (!controller.signal.aborted) {
               const next = await retrySessionRead(
                 controller.signal,
-                () => reader.waitForChange(window),
+                () => retryNonSuperseded(() => reader.waitForChange(window)),
                 retryHistory,
               );
               if (sessions.get(id) !== state) return;
               await retrySessionRead(
                 controller.signal,
                 () =>
-                  queueRoostRead(state, async () => {
-                    let retained = await reader.latest();
-                    const start = state.roostWindow?.start ?? next.start;
-                    while (retained.cursor && retained.start > start)
-                      retained = await reader.older(retained);
-                    if (sessions.get(id) !== state) return;
-                    installHistory(state, retained);
-                    window = retained;
-                  }),
+                  queueRoostRead(state, () =>
+                    retryNonSuperseded(async () => {
+                      let retained = await reader.latest();
+                      const start = state.roostWindow?.start ?? next.start;
+                      while (retained.cursor && retained.start > start)
+                        retained = await reader.older(retained);
+                      if (sessions.get(id) !== state) return;
+                      installHistory(state, retained);
+                      window = retained;
+                    }),
+                  ),
                 retryHistory,
               );
               if (reader.metadataChanged(state.roostMetadata))
@@ -1427,26 +1453,28 @@ export async function openSession(
       pages = 0;
       let changed = true;
       while (!controller.signal.aborted) {
-        state.streamReady = upToDate;
-        updateReadiness();
         if (upToDate) {
+          state.streamReady = true;
+          updateReadiness();
           if (changed || state.status !== 'live')
             event(state.ready ? 'live' : 'syncing');
           changed = false;
           pages = 0;
         } else {
-          event('syncing');
+          if (!state.streamReady) event('syncing');
           if (++pages > 100) throw new Error('session_limit');
         }
+        let livePoll = false;
         const next = await retrySessionRead(
           controller.signal,
           () =>
             readAttempt(state, upToDate ? 'poll' : 'catchup', async () => {
+              livePoll = upToDate && state.streamReady === true;
               const result = await state.client.readOnce({
                 offset,
                 cursor,
                 signal: controller.signal,
-                ...(upToDate ? { live: 'long-poll' as const } : {}),
+                ...(livePoll ? { live: 'long-poll' as const } : {}),
               });
               if (!result.ok) throw new Error(result.result.code);
               return result;
@@ -1464,7 +1492,7 @@ export async function openSession(
         cursor = next.result.cursor;
         upToDate = next.result.upToDate;
         if (next.result.closed) throw new Error('stream_closed');
-        if (!next.result.payload?.body.length && upToDate)
+        if (livePoll && !next.result.payload?.body.length && upToDate)
           await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } catch (error) {
@@ -1478,6 +1506,19 @@ export async function openSession(
   })();
   return 'watching';
 }
+function activeAssistantTurn<T extends Record<string, any>>(
+  entries: readonly T[],
+): T | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || entry.role !== 'assistant') continue;
+    if (entry.finished === true || typeof entry.endedAt === 'number')
+      return undefined;
+    return entry;
+  }
+  return undefined;
+}
+
 export function appendUserTurn(
   doc: LoroDoc,
   id: string,
@@ -1746,11 +1787,13 @@ export async function sendTurn(
       if (!applied) throw new Error('role_changed');
     }
     const pendingQueue = (state.doc.toJSON().mq ?? []) as any[];
-    const mcpServerIds = await selectMcp(
+    let persistedMcp: unknown =
       pendingQueue.findLast((item) =>
         Array.isArray(item.acpSessionConfig?.mcpServerIds),
-      )?.acpSessionConfig.mcpServerIds ?? previous.mcpServerIds,
-    );
+      )?.acpSessionConfig.mcpServerIds ?? previous.mcpServerIds;
+    if (!Array.isArray(persistedMcp) && (started || pendingQueue.length > 0))
+      persistedMcp = [];
+    const mcpServerIds = await selectMcp(persistedMcp);
     if (sessions.get(state.id) !== state || !state.ready)
       throw new Error('session_not_ready');
     const inputConfig = {
@@ -1821,21 +1864,17 @@ export async function sendTurn(
     const lastUser = history.findLastIndex((entry) => entry.role === 'user');
     // Re-evaluate after attachment upload and mention expansion. A completed
     // target must follow the ordinary dispatch/queue path, never orphan a guide.
-    const guide =
-      args.guide === true
-        ? history.findLast(
-            (entry) => entry.role === 'assistant' && !entry.finished,
-          )
-        : undefined;
+    const activeAssistant = activeAssistantTurn(history);
+    const guide = args.guide === true ? activeAssistant : undefined;
     const queued =
       !guide &&
       (args.queue === true ||
         (raw.mq as any[] | undefined)?.length ||
-        history.some(
-          (entry) => entry.role === 'assistant' && !entry.finished,
-        ) ||
+        Boolean(activeAssistant) ||
         (lastUser >= 0 &&
-          history[lastUser].status === 'pending' &&
+          ['pending', 'seen', 'processing'].includes(
+            history[lastUser].status,
+          ) &&
           !history
             .slice(lastUser + 1)
             .some((entry) => entry.role === 'assistant')));
@@ -1899,10 +1938,9 @@ export async function sendTurn(
         if (!targetIsCurrent(state)) throw new Error('workspace_changed');
         const before = state.doc.version();
         writeStarted = true;
-        if (state.target?.backend === 'roost')
-          state.doc
-            .getMap('humanInputReceipts')
-            .set(id, { userId: args.userId!.trim() });
+        state.doc
+          .getMap('humanInputReceipts')
+          .set(id, { userId: args.userId!.trim() });
         const item = state.doc
           .getMovableList('mq')
           .pushContainer(new LoroMap());
@@ -1976,6 +2014,9 @@ export async function sendTurn(
     }
     const before = state.doc.version();
     writeStarted = true;
+    state.doc
+      .getMap('humanInputReceipts')
+      .set(id, { userId: args.userId.trim() });
     if (guide)
       state.doc
         .getMap('lodySteerLinks')
@@ -1985,7 +2026,7 @@ export async function sendTurn(
       id,
       text,
       args.userId,
-      guide ? { ...inputConfig, _lodyDeliveryKind: 'steer' } : inputConfig,
+      inputConfig,
       timestamp,
       guide ? 'pending_apply' : 'pending',
     );
@@ -2124,14 +2165,17 @@ export async function sendTurn(
   }
 }
 
-export async function controlTurn(args: {
-  action: 'stop' | 'steer';
-  sessionId: string;
-  machineId: string;
-  turnId: string;
-  messageId?: string;
-  interrupt?: boolean;
-}): Promise<ControlTurnResult> {
+export async function controlTurn(
+  args: {
+    action: 'stop' | 'steer';
+    sessionId: string;
+    machineId: string;
+    turnId: string;
+    messageId?: string;
+    interrupt?: boolean;
+  },
+  options?: { supportsOperationInbox?: boolean },
+): Promise<ControlTurnResult> {
   const state = active;
   if (!state || state.id !== args.sessionId || !state.ready || state.sending)
     throw new Error('session_not_ready');
@@ -2151,16 +2195,11 @@ export async function controlTurn(args: {
     throw new Error('invalid_control');
   const history = historyList(state);
   const entries = history.toJSON() as any[];
-  if (
-    !entries.some(
-      (entry) =>
-        entry.id === args.turnId &&
-        entry.role === 'assistant' &&
-        !entry.finished,
-    )
-  )
+  const activeTurn = activeAssistantTurn(entries);
+  if (!activeTurn || activeTurn.id !== args.turnId)
     throw new Error('stale_turn');
   state.sending = true;
+  let trackedSteerId = args.messageId;
   try {
     let params: Record<string, unknown> = {
       sessionId: state.id,
@@ -2174,11 +2213,12 @@ export async function controlTurn(args: {
         (item) => item.userTurnId === args.messageId,
       );
       const entry = entries.find((item) => item.id === args.messageId);
+      const linked = state.doc.getMap('lodySteerLinks').get(args.messageId);
       if (
         entry &&
         (entry.role !== 'user' ||
           entry.status !== 'pending' ||
-          entry.inputConfig?._lodyDeliveryKind !== 'steer' ||
+          (entry.inputConfig?._lodyDeliveryKind !== 'steer' && !linked) ||
           entries.some(
             (item) =>
               item.role === 'assistant' && item.userTurnId === args.messageId,
@@ -2265,10 +2305,6 @@ export async function controlTurn(args: {
         return { state: 'not_applied', reason: 'steer_pending' };
       }
       const before = state.doc.version();
-      state.doc.getMap('lodySteerLinks').set(args.messageId, {
-        targetId: args.turnId,
-        mode: args.interrupt ? 'interrupt' : 'native',
-      });
       if (args.interrupt) {
         // Cancellation resumes the existing FIFO queue. Persist the exact edge
         // before cancellation; do not move/replay the machine-owned queue.
@@ -2277,7 +2313,28 @@ export async function controlTurn(args: {
         const queuedConfig = queued.get('acpSessionConfig');
         if (!(queuedConfig instanceof LoroMap))
           throw new Error('invalid_queue');
-        queuedConfig.set('_lodyDeliveryKind', 'steer');
+        const paused = queued.get('paused') === true;
+        const steerMessageId = paused
+          ? `queue-resend:${args.messageId}`
+          : args.messageId;
+        trackedSteerId = steerMessageId;
+        if (paused) {
+          queued.delete('paused');
+          queued.set('userTurnId', steerMessageId);
+          state.steerReceipts.delete(args.messageId);
+          state.steerReceipts.set(steerMessageId, {
+            targetId: args.turnId,
+            state: 'confirming',
+          });
+        }
+        state.doc
+          .getMap('humanInputReceipts')
+          .set(steerMessageId, { userId: userId.trim() });
+        state.doc.getMap('lodySteerLinks').set(steerMessageId, {
+          targetId: args.turnId,
+          mode: 'interrupt',
+        });
+        queuedConfig.delete('_lodyDeliveryKind');
         queuedConfig.set('_lodySteerTarget', args.turnId);
         queuedConfig.set('_lodySteerMode', 'interrupt');
         state.doc.commit();
@@ -2295,7 +2352,11 @@ export async function controlTurn(args: {
           state.workspace,
           args.machineId,
           'session/cancel',
-          { sessionId: state.id, turnId: args.turnId },
+          {
+            sessionId: state.id,
+            turnId: args.turnId,
+            ...(options?.supportsOperationInbox ? { pauseInbox: false } : {}),
+          },
           () => sessionGrant(state),
           AbortSignal.any([
             state.controller.signal,
@@ -2309,15 +2370,24 @@ export async function controlTurn(args: {
           throw new Error('steer_unconfirmed');
         return { state: 'applied' };
       }
+      state.doc
+        .getMap('humanInputReceipts')
+        .set(args.messageId, { userId: userId.trim() });
+      state.doc.getMap('lodySteerLinks').set(args.messageId, {
+        targetId: args.turnId,
+        mode: 'native',
+      });
       // Move the same id atomically. pending_apply is durable intent, not delivery.
       // A lost append/RPC ACK must never trigger an automatic replay.
+      const { _lodyDeliveryKind: _ignoredDeliveryKind, ...steerConfig } =
+        config;
       if (!entry) {
         appendUserTurn(
           state.doc,
           args.messageId,
           item.task,
           userId,
-          { ...config, _lodyDeliveryKind: 'steer' },
+          steerConfig,
           timestamp,
           'pending_apply',
         );
@@ -2343,7 +2413,7 @@ export async function controlTurn(args: {
         userTurnId: args.messageId,
         userId,
         timestamp,
-        inputConfig: config,
+        inputConfig: steerConfig,
       };
       // Release the write lock in finally while this message awaits its receipt.
       return steerTurn(state, args.machineId, params);
@@ -2365,10 +2435,10 @@ export async function controlTurn(args: {
   } catch (error) {
     if (
       args.action === 'steer' &&
-      args.messageId &&
-      state.steerReceipts?.has(args.messageId)
+      trackedSteerId &&
+      state.steerReceipts?.has(trackedSteerId)
     ) {
-      state.steerReceipts?.set(args.messageId, {
+      state.steerReceipts?.set(trackedSteerId, {
         targetId: args.turnId,
         state: 'unknown',
       });
@@ -2378,6 +2448,60 @@ export async function controlTurn(args: {
     state.sending = false;
     scheduleEmit(state, state.status);
   }
+}
+
+async function promoteUndeliveredSteer(
+  state: SessionState,
+  machineId: string,
+  params: Record<string, unknown>,
+) {
+  const history = state.doc.getList('history');
+  const before = state.doc.version();
+  let promoted = false;
+  for (let i = 0; i < history.length; i++) {
+    const entry = history.get(i);
+    if (
+      entry instanceof LoroMap &&
+      entry.get('id') === params.userTurnId &&
+      entry.get('status') === 'pending_apply'
+    ) {
+      entry.set('status', 'pending');
+      entry.set('read', false);
+      promoted = true;
+    }
+  }
+  if (!promoted) return;
+  state.doc.commit();
+  scheduleEmit(state, state.status);
+  const uploaded = await state.client
+    .append({
+      part: {
+        contentType: 'application/octet-stream',
+        body: encodeFrame(state.doc.export({ mode: 'update', from: before })),
+      },
+    })
+    .catch(() => null);
+  if (
+    !uploaded?.ok ||
+    sessions.get(state.id) !== state ||
+    !targetIsCurrent(state)
+  )
+    return;
+  await state.markDispatch(state.id, String(params.userTurnId)).catch(() => {});
+  await machineRpc(
+    state.workspace,
+    machineId,
+    'session/dispatch-turn',
+    {
+      sessionId: state.id,
+      userTurnId: params.userTurnId,
+      userId: params.userId,
+      timestamp: params.timestamp,
+      inputConfig: params.inputConfig,
+    },
+    () => sessionGrant(state),
+    AbortSignal.any([state.controller.signal, AbortSignal.timeout(15000)]),
+  ).catch(() => {});
 }
 
 async function steerTurn(
@@ -2414,7 +2538,17 @@ async function steerTurn(
     | { applied?: boolean; disposition?: string; recoveryOwned?: boolean }
     | undefined;
   if (result?.applied !== true) {
-    record('unknown');
+    if (!result?.recoveryOwned && result?.disposition === 'promotion-failed') {
+      await promoteUndeliveredSteer(state, machineId, params);
+      record('waiting');
+      return { state: 'not_applied', reason: result.disposition };
+    }
+    const requeued =
+      result?.recoveryOwned === true &&
+      ['no-active-turn', 'stale-turn', 'unsupported', 'busy'].includes(
+        result.disposition ?? '',
+      );
+    record(requeued ? 'waiting' : 'unknown');
     return { state: 'not_applied', reason: result?.disposition ?? 'unknown' };
   }
   record('accepted');
@@ -2429,6 +2563,8 @@ async function steerTurn(
     ) {
       entry.set('status', 'processing');
       entry.set('read', true);
+      const input = entry.get('inputConfig');
+      if (input instanceof LoroMap) input.set('_lodyDeliveryKind', 'steer');
     }
   }
   state.doc.commit();

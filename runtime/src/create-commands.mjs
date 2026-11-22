@@ -44,19 +44,16 @@ export function createCommands(runtime, sendTurn, identity) {
    const scope=identity();if(!scope?.userId)throw Error('not_connected');
    return runtime.projectGroups({workspaceId:scope.workspaceId,userId:scope.userId});
   },
-  // A prompt shortcut's body for the composer (web `prepareShortcutSelection`): the index entry
-  // by id, then its body for that revision. Returns the prompt and its references; a read.
+  // A prompt shortcut's body for the composer (web `prepareShortcutSelection`): runtime `select`
+  // checks the id against the last listing and answers from its prefetched bodies, without an
+  // index read. Returns the prompt, its references and its revision; a read.
   async shortcutBody(id) {
    const scope=identity();if(!scope?.userId)throw Error('not_connected');
    if(typeof id!=='string' || !id || id.length>200)throw Error('invalid_request');
-   const base={workspaceId:scope.workspaceId,userId:scope.userId};
-   const list=await runtime.promptShortcuts({...base,action:'list'});
-   const entry=(list?.entries??[]).find(item=>item.id===id);
-   if(!entry)throw Error('shortcut_unavailable');
-   const read=await runtime.promptShortcuts({...base,action:'read',entry});
+   const read=await runtime.promptShortcuts({workspaceId:scope.workspaceId,userId:scope.userId,action:'select',id});
    const shortcut=read?.shortcut;
    if(!shortcut || typeof shortcut.prompt!=='string')throw Error('shortcut_unavailable');
-   return {prompt:shortcut.prompt,mentions:Array.isArray(shortcut.mentions)?shortcut.mentions:[]};
+   return {prompt:shortcut.prompt,mentions:Array.isArray(shortcut.mentions)?shortcut.mentions:[],...(typeof shortcut.revision==='string'?{revision:shortcut.revision}:{})};
   },
   // `source` names what the references come from: a conversation, or the new-chat page's
   // project / computer / agent (iOS `MentionSource`); only non-empty strings cross.
@@ -115,6 +112,11 @@ export function createCommands(runtime, sendTurn, identity) {
    const scope=identity();if(!scope?.userId)throw Error('not_connected');
    try {
     await runtime.ensureSession({sessionId:input.sessionId});
+   } catch {
+    signal?.throwIfAborted();
+    return {state:'not_sent',reason:'session_not_ready'};
+   }
+   try {
     signal?.throwIfAborted();
     const sent=await sendTurn({billingEntitlement:billingEntitlement(input.billingEntitlement),id:input.turnId,sessionId:input.sessionId,machineId:input.machineId,userId:scope.userId,text,...(quotes.length?{quotes,quoteMain:input.text.trim()}:{}),cliType:input.cliType,agentType:input.agentType,...choice,...(attachments.length?{attachmentBlocks:attachments}:{}),...(input.resume?{resume:input.resume}:{}),...(input.guide===true?{guide:true}:input.queue?{queue:true}:{})});
     return {state:sent.state,reason:sent.reason};
