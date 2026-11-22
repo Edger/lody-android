@@ -566,6 +566,10 @@ data class FileDiff(
     val added: Int? = null,
     val removed: Int? = null,
     val unavailable: String? = null,
+    /** What the new side is compared against: `turn` (the turn's start) or `current` (now). */
+    val base: String? = null,
+    /** The computer refused a side as `too_large`; it is text, but not enough was sent to diff. */
+    val tooLarge: Boolean = false,
 )
 
 /** One folder of a local project (upstream `DirectoryListing`): folders first, then files, by name. */
