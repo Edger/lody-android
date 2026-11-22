@@ -49,6 +49,8 @@ import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.platform.testTag
@@ -94,6 +96,12 @@ data class ChatContext(
     val machineEmulator: Boolean = false,
     /** Numeric protocol capability versions advertised by the session's computer. */
     val machineCapabilities: Map<String, Int> = emptyMap(),
+    /** The conversation's Agent Config name from the computer's synced configs, online or not. */
+    val agentConfigName: String? = null,
+    /** The conversation's Status view layout row (tier, permissions, opened children), if listed. */
+    val statusRow: app.lody.android.runtime.StatusViewRow? = null,
+    /** The member cannot write the workspace (a viewer, from the live member list): no status actions. */
+    val readOnly: Boolean = false,
 )
 
 /** The More menu's preview entries; null labels hide an entry. */
@@ -109,12 +117,26 @@ internal data class PreviewMenu(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, context: ChatContext, onBack: () -> Unit, onSelectTab: (String) -> Unit = {}, creation: app.lody.android.create.CreationSubmissions.Submission? = null, persistDraft: Boolean = false) {
+fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, context: ChatContext, onBack: () -> Unit, onSelectTab: (String) -> Unit = {}, creation: app.lody.android.create.CreationSubmissions.Submission? = null, persistDraft: Boolean = false, statusView: app.lody.android.home.StatusViewService? = null) {
     BackHandler(onBack = onBack)
     var retry by remember(id, scope) { mutableIntStateOf(0) }
     var status by remember(id, scope) { mutableStateOf("syncing") }
     var sendReady by remember(id, scope) { mutableStateOf(false) }
     var controlReady by remember(id, scope) { mutableStateOf(false) }
+    var manualReconnect by remember(id, scope) { mutableStateOf(false) }
+    var connectingShown by remember(id, scope) { mutableStateOf(false) }
+    LaunchedEffect(scope, id, status) {
+        if (status == "live" || status == "offline") {
+            connectingShown = false
+            manualReconnect = false
+        } else if (manualReconnect) {
+            connectingShown = true
+        } else {
+            connectingShown = false
+            delay(4_000L)
+            connectingShown = true
+        }
+    }
     var historyHasMore by remember(id, scope) { mutableStateOf(false) }
     var historyLoading by remember(id, scope) { mutableStateOf(false) }
     // User turns plus queued inputs, as the free-plan quota counts them (runtime `billableTurnCount`).
@@ -144,12 +166,14 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     val mentions = rememberMentionState(id, scope)
     val appContext = LocalContext.current.applicationContext
     val coroutines = rememberCoroutineScope()
-    val agentName = agentLabel(context.session)
+    val agentName = agentLabel(context.session, context.agentConfigName, stringResource(R.string.settings_agent_kind_custom))
     val meName = context.me?.name.orEmpty()
     // Resolved in composition: the transcript is built off the main thread.
     val application = appContext.applicationContext as app.lody.android.LodyApplication
     // Agent images in this conversation, read with the verified account (iOS `ChatImageCell`).
     val sessionImages = remember(scope, id) { SessionImageSource(application.sessionImages, scope, id) }
+    // Files in this conversation, read with the verified account (iOS `openAttachment`).
+    val sessionFiles = rememberSessionFileOpener(application.sessionFiles, scope, id)
     val accountState by application.account.state.collectAsState()
     var members by remember(scope) { mutableStateOf(emptyMap<String, app.lody.android.auth.WorkspaceMember>()) }
     LaunchedEffect(scope, accountState.verified) {
@@ -180,6 +204,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                                 delivery(message.status),
                                 message.attachments,
                                 message.references,
+                                message.quotes,
                             )
                             else -> {
                                 val items = message.items.ifEmpty { listOf(TurnItem.Text(message.id, message.text)) }
@@ -233,6 +258,11 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     }
     // A sent turn leaves the optimistic list once the transcript carries its id.
     val authorsByMessage = remember(messages) { messages.associate { it.id to it.userId } }
+    val outboxState by application.sessionOutbox.state.collectAsState()
+    val outboxRecord = outboxState[application.sessionOutbox.key(scope, id)]
+    LaunchedEffect(scope, id, authorsByMessage) {
+        if (authorsByMessage.isNotEmpty()) application.sessionOutbox.acknowledge(scope, id, authorsByMessage.keys)
+    }
     val firstTurn = creation?.takeUnless { it.request.turnId in forgotten }?.let {
         Outgoing(it.request.turnId, it.request.text, it.at, when (it.state) {
             "sending" -> Delivery.Sending
@@ -243,8 +273,11 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         }, it.request.attachments.map { block -> MessageAttachment(block.optString("fileName", block.optString("name", "attachment")), block.optString("type") == "image") },
             it.request.displayText?.let { shown -> shown to it.request.displayReferences })
     }
-    val pending = remember(firstTurn, outgoing, authorsByMessage) {
-        (listOfNotNull(firstTurn) + outgoing).filter { it.turnId !in authorsByMessage }
+    val outboxTurn = outboxRecord?.takeUnless { it.turnId in forgotten }?.let {
+        Outgoing(it.turnId, it.text, it.at, it.delivery(status == "live"), it.previews, it.shownText to it.shownReferences, it.quotes)
+    }
+    val pending = remember(firstTurn, outboxTurn, outgoing, authorsByMessage) {
+        (listOfNotNull(firstTurn, outboxTurn) + outgoing.filter { o -> o.turnId != outboxTurn?.turnId }).filter { it.turnId !in authorsByMessage }
     }
     // Composer focus / IME animation must not rebuild every sender row in a long chat.
     val all = remember(entries, authorsByMessage, members, context.me, memberLabel, pending, mentions.catalogs, forgotten) {
@@ -256,8 +289,10 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         } + pending.map {
             // The composer's own labels and chips (the new chat's first turn carries them, as this
             // conversation's catalog may not list its references yet); else this composer's.
-            val (text, references) = it.shown ?: mentions.shown(it.text)
-            ChatEntry.User(it.turnId, text, senderIdentity(null, context.me, members[context.me?.id], memberLabel, turnTime(it.at)), it.delivery, it.attachments, references)
+            val (shown, references) = it.shown ?: mentions.shown(it.text)
+            // Quote cards follow the main text as the runtime composes the turn.
+            val (text, blocks) = MessageQuotes.compose(shown, it.quotes)
+            ChatEntry.User(it.turnId, text, senderIdentity(null, context.me, members[context.me?.id], memberLabel, turnTime(it.at)), it.delivery, it.attachments, references, blocks)
         }
     }
     val creationUnconfirmed = creation != null && creation.request.turnId !in forgotten && creation.state !in setOf("accepted", "queued") && creation.request.turnId !in authorsByMessage
@@ -284,7 +319,9 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         quotaLocked -> stringResource(R.string.chat_free_turn_limit, FREE_SESSION_TURN_LIMIT)
         else -> (FREE_SESSION_TURN_LIMIT - (quotaTurns ?: 0)).let { pluralStringResource(R.plurals.chat_free_turns_remaining, it, it) }
     }
-    val canSend = context.session?.isTabClosed != true && !creationUnconfirmed && sendReady && session?.cliType != null && session.agentType != null && !quotaLocked
+    val canEdit = context.session?.isTabClosed != true && context.session?.archived != true && !creationUnconfirmed && session?.cliType != null && session.agentType != null && !quotaLocked
+    val outboxSending = outboxRecord?.blocksInput == true
+    val canSend = canEdit && !outboxSending
     // The composer's run config (web's mobile run-config chip): the session's provider choices,
     // read once the conversation is live. Until the reader changes it the chip shows the latest
     // turn's config from the snapshot and sends nothing (upstream keeps it); the first change
@@ -296,9 +333,33 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         // rejects it): read the workspace-wide options, as the new-chat page does for chats.
         // A multi-repository project's session reads them workspace-wide, as a plain chat.
         val project = session.projectId.takeUnless { app.lody.android.create.CreateSessionModel.isChat(it) || app.lody.android.create.CreateSessionModel.isGroup(it) }
-        try { options = repository.options(scope, project) }
-        catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { /* The chip still shows the session's model; choices wait for the next load. */ }
+        var probed = false
+        // The runtime answers before a computer's stream has caught up and leaves its capability
+        // out, so a read that failed or did not list this conversation's capability or agent is
+        // read again when the options change, never on every render; a retry keeps what an
+        // earlier read found (iOS `SessionComposerModel.optionsChanged`). An online agent listed
+        // without a capability is probed once, as the new-chat page does.
+        suspend fun read(): Boolean {
+            val value = try { repository.options(scope, project) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { return false }
+            val found = value.capability(session.machineId, session.cliType, session.agentType, session.agentConfigId)
+            val listed = value.agents.any { it.machineId == session.machineId && it.id == session.agentConfigId }
+            val previous = options
+            if (previous == null || found != null || previous.capability(session.machineId, session.cliType, session.agentType, session.agentConfigId) == null) options = value
+            val config = session.agentConfigId
+            if (found == null && !probed && config != null && listed) {
+                probed = true
+                launch {
+                    try { application.creation.refreshCapability(scope, config) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { }
+                }
+            }
+            return found != null && (listed || config == null)
+        }
+        if (read()) return@LaunchedEffect
+        application.creation.observeOptions(scope).first { read() }
     }
     var machineOnline by remember(scope, session?.machineId) { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(scope, session?.machineId) {
@@ -360,13 +421,40 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     }
     var runConfig by remember(id) { mutableStateOf(false) }
     val failedText = stringResource(R.string.chat_send_failed)
+    val mentionsFailedText = stringResource(R.string.chat_send_mentions_failed)
     // Picked attachments wait in the composer and upload when the turn is sent.
     var attachments by remember(id) { mutableStateOf(emptyList<PendingAttachment>()) }
+    // Quote cards wait beside them in insertion order, kept on the device with the text draft.
+    var quotes by remember(id, scope) { mutableStateOf(if (persistDraft) ComposerDrafts.readQuotes(draftContext, scope, ComposerDrafts.session(id)) else emptyList()) }
+    LaunchedEffect(scope, id, quotes) { if (persistDraft) ComposerDrafts.writeQuotes(draftContext, scope, ComposerDrafts.session(id), quotes) }
+    // The comment sheet: a new quote's snapshot, or the card being edited.
+    var quoteEditor by remember(id) { mutableStateOf<QuoteEditing?>(null) }
     val attachLimit = stringResource(R.string.chat_attach_limit)
     val uploadFailed = stringResource(R.string.chat_attach_failed)
     val snackbar = remember { SnackbarHostState() }
+    // Later / Settle / Move to Focus for the conversation, with the Later sheet, the opened
+    // sub-conversation question and Undo (shared with Home).
+    // The page's row comes from the team layout, so its commands resolve against that list.
+    val sessionsNow by androidx.compose.runtime.rememberUpdatedState(context.relatedSessions)
+    val statusActions = app.lody.android.home.rememberStatusActions(statusView.takeUnless { context.readOnly }, snackbar, app.lody.android.runtime.StatusViewScope.Team) { sessionsNow }
+    val statusRow = context.statusRow
+    val statusMenu = statusRow?.takeIf { statusActions != null && it.canManage }?.let { row ->
+        val conversation = context.relatedSessions.firstOrNull { it.id == row.id }
+        // A conversation the layout carries under a pinned opener is not pinned itself: its own
+        // snooze / settle metadata decides the actions. A pinned one takes none here.
+        val carried = row.tier == app.lody.android.runtime.StatusTier.Pinned
+        if (carried && conversation?.pinned != false) return@let null
+        val settled = if (carried) conversation?.settledAt != null else row.tier == app.lody.android.runtime.StatusTier.Settled
+        val later = if (carried) conversation?.snoozedUntil != null else row.tier == app.lody.android.runtime.StatusTier.Later
+        val tree = app.lody.android.home.ChatListModel.openedTree(context.relatedSessions, row.id)
+        val target = app.lody.android.home.StatusTarget(row.id, row.tier, tree.map { it.id }, tree.count { it.status in RunningStatuses })
+        StatusMenu(settle = !settled, focus = settled || later, { statusActions!!.later(target) }, { statusActions!!.settle(target) }, { statusActions!!.focus(target) })
+    }
     val forgetFailure = stringResource(R.string.chat_forget_failed)
-    val retryablePendingIds = remember(messages) { messages.filter { it.inputRetryable }.map { it.id }.toSet() }
+    val retryablePendingIds = remember(messages, outboxRecord) {
+        messages.filter { it.inputRetryable }.map { it.id }.toSet() +
+            setOfNotNull(outboxRecord?.takeIf { it.phase == "failed" }?.turnId)
+    }
     forgetId?.let { inputId ->
         AlertDialog(onDismissRequest = { forgetId = null },
             title = { Text(stringResource(R.string.chat_forget_title)) },
@@ -374,6 +462,12 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
             confirmButton = { TextButton(onClick = {
                 forgetId = null
                 coroutines.launch {
+                    if (outboxRecord?.turnId == inputId) {
+                        application.sessionOutbox.forget(scope, id, inputId)
+                        outgoing = outgoing.filterNot { it.turnId == inputId }
+                        forgotten = forgotten + inputId
+                        return@launch
+                    }
                     try {
                         repository.forgetPendingInput(scope, id, inputId)
                         outgoing = outgoing.filterNot { it.turnId == inputId }
@@ -437,86 +531,112 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
             }
         }
     }
-    val messageActions = rememberMessageActions(repository, scope, id, messages, canSend && session?.status !in RunningStatuses, onSelectTab)
-    val running = session?.status in RunningStatuses || pending.any { it.delivery == Delivery.Sending }
-    // One send path for typed turns and the action bar's prompts: optimistic bubble, never resent.
-    // Attachments upload first; a failed upload fails the turn before anything is written and
-    // hands the text and attachments back to an empty composer.
-    val sendText: (String, List<PendingAttachment>) -> Unit = sendText@{ text, files ->
-        if (!canSend || (text.isEmpty() && files.isEmpty()) || session == null) return@sendText
+    val messageActions = rememberMessageActions(repository, scope, id, messages, status == "live" && canSend && session?.status !in RunningStatuses, onSelectTab)
+    val running = session?.status in RunningStatuses || pending.any { it.delivery == Delivery.Sending || it.delivery == Delivery.Waiting }
+    val hasStreamingAssistant = messages.lastOrNull { it.role != "user" }?.streaming == true
+    val queuedBehavior = AppPreferences.queuedMessageBehavior(appContext)
+    LaunchedEffect(scope, id, sendReady, session?.status, hasStreamingAssistant, capability?.steer, queuedBehavior) {
+        application.sessionOutbox.setForeground(
+            scope, id,
+            SessionOutbox.Foreground(
+                // Roost delivery follows send readiness, which survives a history subscription reconnect.
+                live = sendReady,
+                busy = session?.status in RunningStatuses || hasStreamingAssistant,
+                streaming = hasStreamingAssistant,
+                steerable = capability?.steer == true,
+                queuedBehavior = queuedBehavior,
+            ),
+        )
+    }
+    DisposableEffect(scope, id) { onDispose { application.sessionOutbox.leaveForeground(scope, id) } }
+    LaunchedEffect(scope, id) {
+        application.sessionOutbox.failures.collect { failure ->
+            if (failure.scope != scope || failure.sessionId != id) return@collect
+            fun handBack() {
+                if (prompt.isEmpty() && attachments.isEmpty() && quotes.isEmpty()) {
+                    val rec = failure.record
+                    prompt = rec.text
+                    field = androidx.compose.ui.text.input.TextFieldValue(rec.text, androidx.compose.ui.text.TextRange(rec.text.length))
+                    attachments = rec.files
+                    quotes = rec.quotes
+                    application.sessionOutbox.forget(scope, id, rec.turnId)
+                }
+            }
+            if (failure.uploadFailed) {
+                handBack()
+                snackbar.showSnackbar(uploadFailed)
+                return@collect
+            }
+            val quota = quotaFailure(failure.reason)
+            if (quota != null || failure.record.quotes.isNotEmpty()) handBack()
+            // A definite reference failure keeps the turn for Retry, which resolves the original
+            // tokens again with the same input id, attachments, quotes and turn configuration.
+            snackbar.showSnackbar(quota?.let { appContext.getString(it) } ?: if (failure.reason == "mention_expansion_failed") mentionsFailedText else failedText)
+        }
+    }
+    val sendText: (String, List<PendingAttachment>, List<MessageQuoteCard>) -> Unit = sendText@{ text, files, cards ->
+        if (!canSend || (text.isEmpty() && files.isEmpty() && cards.isEmpty()) || session == null) return@sendText
         val turnId = UUID.randomUUID().toString()
         val shown = files.map { MessageAttachment(it.name, it.image) }
-        outgoing = outgoing + Outgoing(turnId, text, Instant.now().toString(), Delivery.Sending, shown)
-        val explicit = chosen
-        val choice = Triple(modelId, modeId, effort)
-        val role = SessionRoles.send(roles != null, activeRole, pickedRole, durableRole)
-        val switches = if (chosen) chosenOptions else emptyMap()
-        coroutines.launch {
-            val busy = session.status in RunningStatuses
-            // The Guide preference steers the running reply when the agent can; otherwise it queues.
-            val guide = busy && capability?.steer == true && AppPreferences.queuedMessageBehavior(appContext) == AppPreferences.GUIDE
-            val queue = busy && !guide
-            // iOS `turnQuota`: a refused turn must not upload its attachments first. A failed check
-            // admits it; the send checks the quota again.
-            val early = if (files.isEmpty()) null else try { repository.turnQuota(scope, id) }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { null }
-            quotaFailure(early)?.let { copy ->
-                outgoing = outgoing.map { if (it.turnId == turnId) it.copy(delivery = Delivery.Failed) else it }
-                if (prompt.isEmpty() && attachments.isEmpty()) { prompt = text; field = androidx.compose.ui.text.input.TextFieldValue(text, androidx.compose.ui.text.TextRange(text.length)); attachments = files }
-                snackbar.showSnackbar(appContext.getString(copy))
-                return@launch
-            }
-            val blocks = try { repository.upload(scope, id, files) }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { null }
-            if (blocks == null) {
-                outgoing = outgoing.map { if (it.turnId == turnId) it.copy(delivery = Delivery.Failed) else it }
-                if (prompt.isEmpty() && attachments.isEmpty()) { prompt = text; attachments = files }
-                snackbar.showSnackbar(uploadFailed)
-                return@launch
-            }
-            val request = SendTextRequest(
-                id, turnId, text, session.machineId, session.cliType!!, session.agentType!!, session.resume, queue = queue,
-                modelId = choice.first, modeId = choice.second, effort = choice.third, explicitChoice = explicit, attachments = blocks,
-                role = role, agentConfigId = session.agentConfigId, configOptionValues = switches, guide = guide,
-            )
-            var reason: String? = null
-            val result = try {
-                var sent = repository.send(scope, request)
-                // An earlier Roost input still awaits its owner and nothing was written. The runtime
-                // bounds each wait, so keep the message sending with the same identity, as Web does.
-                while (sent.state == "not_sent" && sent.reason == PREVIOUS_INPUT_PENDING) sent = repository.send(scope, request)
-                reason = sent.reason
-                sent.state
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { "unknown" }
-            val delivery = when (result) {
-                "queued" -> Delivery.Queued
-                "not_sent" -> Delivery.Failed
-                "unknown" -> Delivery.Unknown
-                "uploaded" -> Delivery.Sending
-                else -> Delivery.Sent
-            }
-            outgoing = outgoing.map { if (it.turnId == turnId) it.copy(delivery = delivery) else it }
-            if (result == "not_sent") {
-                // A quota refusal wrote nothing: hand the text back, as Web keeps the draft.
-                val quota = quotaFailure(reason)
-                if (quota != null && prompt.isEmpty() && attachments.isEmpty()) { prompt = text; field = androidx.compose.ui.text.input.TextFieldValue(text, androidx.compose.ui.text.TextRange(text.length)); attachments = files }
-                snackbar.showSnackbar(quota?.let { appContext.getString(it) } ?: failedText)
-            }
-        }
+        val (shownText, shownRefs) = mentions.shown(text)
+        application.sessionOutbox.submit(
+            SessionOutbox.Record(
+                scope = scope,
+                sessionId = id,
+                turnId = turnId,
+                text = text,
+                shownText = shownText,
+                shownReferences = shownRefs,
+                quotes = cards,
+                files = files,
+                previews = shown,
+                at = Instant.now().toString(),
+                machineId = session.machineId,
+                cliType = session.cliType!!,
+                agentType = session.agentType!!,
+                resume = session.resume,
+                modelId = modelId,
+                modeId = modeId,
+                effort = effort,
+                explicitChoice = chosen,
+                role = SessionRoles.send(roles != null, activeRole, pickedRole, durableRole),
+                agentConfigId = session.agentConfigId,
+                configOptionValues = if (chosen) chosenOptions else emptyMap(),
+                persist = persistDraft,
+            ),
+        )
         Unit
     }
+    val quoteTooLong = stringResource(R.string.quote_too_long)
+    val quoteUpgrade = stringResource(R.string.quote_upgrade)
+    val quotesSupported = MessageQuotes.supported(context.machineCapabilities)
     val send = {
         // Role labels ("🧪 Reviewer") go out as their tokens (`@role:<id>`), which expand at send.
         val text = mentions.resolve(prompt.trim())
-        if (canSend && (text.isNotEmpty() || attachments.isNotEmpty())) {
-            sendText(text, attachments)
+        // Quotes are never sent as plain text to a computer that cannot read them: the draft stays.
+        if (quotes.isNotEmpty() && !quotesSupported) coroutines.launch { snackbar.showSnackbar(quoteUpgrade) }
+        else if (canSend && (text.isNotEmpty() || attachments.isNotEmpty() || quotes.isNotEmpty())) {
+            sendText(text, attachments, quotes)
             prompt = ""
             attachments = emptyList()
+            quotes = emptyList()
         }
+        Unit
     }
+    // Quote (the transcript's selection menu): a non-empty passage of at most 50,000 characters
+    // opens the comment sheet, on a computer that reads quotes.
+    val quotePassage: (String) -> Unit = { passage ->
+        val snapshot = passage.trim()
+        when {
+            snapshot.isEmpty() -> Unit
+            snapshot.length > MessageQuotes.MAX_CHARS -> { coroutines.launch { snackbar.showSnackbar(quoteTooLong) } }
+            !quotesSupported -> { coroutines.launch { snackbar.showSnackbar(quoteUpgrade) } }
+            else -> { quoteEditor = QuoteEditing(null, snapshot, "") }
+        }
+        Unit
+    }
+    val currentQuotePassage by rememberUpdatedState(quotePassage)
+    val quoter = remember { { passage: String -> currentQuotePassage(passage) } }
     // Web's limits: at most 8 images and 8 files per turn; extra picks are dropped with a notice.
     val addAttachments: (List<PendingAttachment>) -> Unit = { picked ->
         val oversized = picked.filter(SessionAttachmentUploads::oversized)
@@ -963,32 +1083,44 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     var scrollToLatest by remember { mutableIntStateOf(0) }
     val atLatest by remember { derivedStateOf { !listState.canScrollForward } }
     val headerHeight = LodySize.controlLg + LodySpacing.md
+    var mentionDockHeight by remember(id) { mutableStateOf(MentionPanelHeight) }
     Scaffold(
         containerColor = colors.bgBase,
         snackbarHost = { SnackbarHost(snackbar) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { padding ->
+        val headerRoom = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + headerHeight
+        val density = LocalDensity.current
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
             .imePadding().windowInsetsPadding(
                 WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Bottom),
             )) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                val top = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + headerHeight
+            // The composer never rises under the floating header: when the transcript's room is
+            // smaller than the header, the @ panel gives up rows first, down to its minimum, since
+            // its lists scroll (iOS `ChatComposerView.fitPageRoom`).
+            Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { size ->
+                val room = with(density) { size.height.toDp() } - headerRoom
+                mentionDockHeight = (mentionDockHeight + room).coerceIn(MentionPanelMinimumHeight, MentionPanelHeight)
+            }) {
+                val top = headerRoom
                 if (context.session?.isTabClosed == true || all.isEmpty()) {
                     Box(Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
                         Text(stringResource(if (context.session?.isTabClosed == true) R.string.chat_tabs_all_closed else if (status == "live") R.string.chat_empty else if (status == "offline") R.string.chat_offline else R.string.chat_loading), style = LodyTheme.typography.body, color = colors.textSecondary)
                     }
                 } else {
                     // The transcript scrolls under the floating header.
-                    CompositionLocalProvider(androidx.compose.ui.platform.LocalUriHandler provides transcriptLinks, LocalSessionImages provides sessionImages) { ChatTranscript(
-                        all, Modifier.fillMaxSize(), contentPadding = PaddingValues(top = top + if (creationNotice != null) LodySize.controlLg else LodySpacing.none, bottom = LodySpacing.md), state = listState, scrollToLatest = scrollToLatest,
+                    val transcriptSelection = remember { TranscriptSelection() }
+                    CompositionLocalProvider(androidx.compose.ui.platform.LocalUriHandler provides transcriptLinks, LocalSessionImages provides sessionImages, LocalSessionFiles provides sessionFiles, LocalMessageQuoter provides quoter.takeIf { context.session?.isTabClosed != true }, LocalTranscriptSelection provides transcriptSelection) { ChatTranscript(
+                        all, Modifier.fillMaxSize().clearsTranscriptSelection(transcriptSelection), contentPadding = PaddingValues(top = top + if (creationNotice != null) LodySize.controlLg else LodySpacing.none, bottom = LodySpacing.md), state = listState, scrollToLatest = scrollToLatest,
                         historyHasMore = historyHasMore, historyLoading = historyLoading,
                         loadEarlier = { repository.loadOlder(scope, id) },
                         onForgetPending = { forgetId = it },
                         retryablePendingIds = retryablePendingIds,
                         onRetryPending = { inputId ->
-                            coroutines.launch {
+                            if (outboxRecord?.turnId == inputId && outboxRecord.phase == "failed") {
+                                application.sessionOutbox.retry(scope, id, inputId)
+                            } else coroutines.launch {
                                 try { repository.retryPendingInput(scope, id, inputId) }
                                 catch (cancelled: CancellationException) { throw cancelled }
                                 catch (_: Exception) { snackbar.showSnackbar(failedText) }
@@ -1009,19 +1141,35 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 }
                 ChatHeader(context.title, context.tabs, context.closedTabs, id, creatingTab, changingTab, onBack, onSelectTab, createTab, changeTab, context.machineName, machineOnline, loadMachine,
                     onBrowseFiles = if (ProjectFiles.browsable(context.session, creationUnconfirmed)) ({ browsingFiles = true }) else null,
-                    previews = previewMenu.takeIf { context.session?.isTabClosed != true && !creationUnconfirmed })
+                    previews = previewMenu.takeIf { context.session?.isTabClosed != true && !creationUnconfirmed },
+                    status = statusMenu)
                 if (creationNotice != null) {
                     Text(creationNotice,
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = top).padding(horizontal = TranscriptMargin),
                         style = LodyTheme.typography.footnote, color = colors.textSecondary)
                 }
-                if (status == "offline" && !creationUnconfirmed) {
-                    Row(
-                        Modifier.align(Alignment.TopCenter).padding(top = top).padding(horizontal = TranscriptMargin).fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
+                val connectionSlot = when {
+                    context.session?.isTabClosed == true || creationUnconfirmed -> null
+                    status == "offline" -> "paused"
+                    status != "live" && connectingShown -> "connecting"
+                    else -> null
+                }
+                if (connectionSlot != null) {
+                    val paused = connectionSlot == "paused"
+                    val statusLabel = stringResource(if (paused) R.string.chat_connection_paused else R.string.chat_connection_connecting)
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(start = TranscriptMargin, end = TranscriptMargin, bottom = LodySpacing.md)
+                            .dropShadow(CircleShape, LodyElevations.sm.shadow())
+                            .clip(CircleShape)
+                            .background(colors.bgOverlay)
+                            .border(0.5.dp, colors.borderSubtle, CircleShape)
+                            .then(if (paused) Modifier.clickable(role = Role.Button) { manualReconnect = true; connectingShown = true; retry++ } else Modifier)
+                            .padding(horizontal = LodySpacing.md, vertical = LodySpacing.xs + LodySpacing.xxs)
+                            .semantics { contentDescription = statusLabel },
                     ) {
-                        Text(stringResource(R.string.chat_offline), style = LodyTheme.typography.footnote, color = colors.textSecondary, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { retry++ }) { Text(stringResource(R.string.chat_retry), color = colors.accentFg) }
+                        Text(statusLabel, style = LodyTheme.typography.subhead, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 // Web's round "scroll to latest" button, shown once the reader has scrolled up.
@@ -1053,7 +1201,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                             writing != null || action !in bar.actions -> Unit
                             action == SessionInfoBar.Action.Merge -> mergeTarget = bar.pullRequest
                             action == SessionInfoBar.Action.ReadyForReview -> bar.pullRequest?.let { writePullRequest(it, null) }
-                            else -> sendText(bar.prompt(action, prompts), emptyList())
+                            else -> sendText(bar.prompt(action, prompts), emptyList(), emptyList())
                         }
                     },
                     onCopied = { coroutines.launch { snackbar.showSnackbar(it) } },
@@ -1072,7 +1220,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 onPromptChange = { if (it.text.length <= 32000) { field = app.lody.android.chat.MentionPresentation.edit(field, it); prompt = field.text } },
                 onFocusChange = { composerFocused = it },
                 referencePresentation = mentions.presentation(LodyTheme.colors.accentOnSubtle, LodyTheme.colors.accentSubtle),
-                enabled = canSend,
+                enabled = canEdit,
+                sending = outboxSending,
                 quotaLocked = quotaLocked,
                 agentCliType = session?.cliType,
                 agentType = session?.agentType,
@@ -1093,11 +1242,31 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 },
                 onPickFiles = { filePicker.launch(arrayOf("*/*")) },
                 onRemoveAttachment = { removed -> attachments = attachments.filterNot { it.id == removed } },
+                quotes = quotes,
+                onOpenQuote = { card -> quoteEditor = QuoteEditing(card.id, card.snapshot, card.comment) },
+                onRemoveQuote = { removed -> quotes = quotes.filterNot { it.id == removed } },
                 onSend = send,
                 onStop = stop,
             )
             // Docked between the prompt and the keyboard; rows never take focus, so the keyboard stays.
-            MentionDock(mentions, field, active = composerFocused && canSend, loadShortcut = { shortcutId -> repository.shortcut(scope, shortcutId) }) { next -> field = next; prompt = next.text }
+            MentionDock(mentions, field, active = composerFocused && canSend, loadShortcut = { shortcutId -> repository.shortcut(scope, shortcutId) }, height = mentionDockHeight) { next -> field = next; prompt = next.text }
+        }
+    }
+    sessionFiles.markdown?.let { file ->
+        key(file) { MarkdownAttachmentSheet(file, sessionFiles) { sessionFiles.markdown = null } }
+    }
+    quoteEditor?.let { editing ->
+        key(editing) {
+            QuoteSheet(
+                editing.snapshot, editing.comment, editing.cardId != null,
+                onDismiss = { quoteEditor = null },
+                onSave = { comment ->
+                    quotes = if (editing.cardId == null) quotes + MessageQuoteCard(UUID.randomUUID().toString(), editing.snapshot, comment)
+                        else quotes.map { if (it.id == editing.cardId) it.copy(comment = comment) else it }
+                    quoteEditor = null
+                },
+                onRemove = { quotes = quotes.filterNot { it.id == editing.cardId }; quoteEditor = null },
+            )
         }
     }
     if (runConfig && session != null) {
@@ -1175,7 +1344,7 @@ internal fun quotaFailure(reason: String?): Int? = when (reason) {
 }
 
 /** Runtime `not_sent` reason: an earlier Roost input awaits its owner and nothing was written. */
-private const val PREVIOUS_INPUT_PENDING = "previous_input_pending"
+internal const val PREVIOUS_INPUT_PENDING = "previous_input_pending"
 private const val RUN_ROLE = "role"
 private const val RUN_ROLE_NONE = "__none__"
 private const val RUN_AGENT = "agent"
@@ -1189,9 +1358,12 @@ private val RunningStatuses = setOf("running", "initializing", "processing", "in
 
 private val HeaderFade = 24.dp
 
+/** The conversation page's Status view actions; [tier] decides which apply. */
+internal class StatusMenu(val settle: Boolean, val focus: Boolean, val onLater: () -> Unit, val onSettle: () -> Unit, val onFocus: () -> Unit)
+
 /** Floating header: title over the tappable machine subtitle, with conditional Tabs and More. */
 @Composable
-internal fun BoxScope.ChatHeader(title: String, tabs: List<CatalogSession>, closedTabs: List<CatalogSession>, currentId: String, creating: Boolean, busy: String?, onBack: () -> Unit, onSelectTab: (String) -> Unit, onNewTab: () -> Unit, onChangeTab: (String, Boolean) -> Unit, machine: String = "", machineOnline: Boolean? = null, loadMachine: suspend () -> MachinePanelData = { MachinePanelData() }, onBrowseFiles: (() -> Unit)? = null, previews: PreviewMenu? = null) {
+internal fun BoxScope.ChatHeader(title: String, tabs: List<CatalogSession>, closedTabs: List<CatalogSession>, currentId: String, creating: Boolean, busy: String?, onBack: () -> Unit, onSelectTab: (String) -> Unit, onNewTab: () -> Unit, onChangeTab: (String, Boolean) -> Unit, machine: String = "", machineOnline: Boolean? = null, loadMachine: suspend () -> MachinePanelData = { MachinePanelData() }, onBrowseFiles: (() -> Unit)? = null, previews: PreviewMenu? = null, status: StatusMenu? = null) {
     var expanded by remember(currentId) { mutableStateOf(false) }
     var history by remember(currentId) { mutableStateOf(false) }
     var restoringId by remember(currentId) { mutableStateOf<String?>(null) }
@@ -1252,6 +1424,15 @@ internal fun BoxScope.ChatHeader(title: String, tabs: List<CatalogSession>, clos
                     Icon(LodyIcons.More, stringResource(R.string.bar_more), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
                 }
                 DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                    // The conversation's Status view actions, as on the list rows.
+                    if (status != null) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.status_later)) },
+                            leadingIcon = { Icon(LodyIcons.Clock, null) }, onClick = { more = false; status.onLater() })
+                        if (status.settle) DropdownMenuItem(text = { Text(stringResource(R.string.status_action_settle)) },
+                            leadingIcon = { Icon(LodyIcons.Check, null) }, onClick = { more = false; status.onSettle() })
+                        if (status.focus) DropdownMenuItem(text = { Text(stringResource(R.string.status_action_focus)) },
+                            leadingIcon = { Icon(LodyIcons.Undo, null) }, onClick = { more = false; status.onFocus() })
+                    }
                     if (onBrowseFiles != null) DropdownMenuItem(text = { Text(stringResource(R.string.files_title)) },
                         leadingIcon = { Icon(LodyIcons.Folder, null) }, onClick = { more = false; onBrowseFiles() })
                     if (previews != null) {
@@ -1347,7 +1528,12 @@ private data class Outgoing(
     val turnId: String, val text: String, val at: String, val delivery: Delivery, val attachments: List<MessageAttachment> = emptyList(),
     /** Text and chip ranges as the sending composer showed them, when it recorded them. */
     val shown: Pair<String, List<app.lody.android.runtime.MessageReference>>? = null,
+    /** The turn's quote cards, shown after its text as the runtime appends them. */
+    val quotes: List<MessageQuoteCard> = emptyList(),
 )
+
+/** The quote comment sheet's subject: a new passage ([cardId] null) or a card being edited. */
+private data class QuoteEditing(val cardId: String?, val snapshot: String, val comment: String)
 
 internal fun delivery(status: String) = when (status) {
     // Execution failure/cancellation still acknowledges receipt, as on desktop.
@@ -1368,8 +1554,10 @@ internal fun senderIdentity(userId: String?, me: Account?, member: app.lody.andr
 }
 
 /** The session's assistant, by its last model or its agent type ("claude-code" → "Claude Code"). */
-private fun agentLabel(session: CatalogSession?): String =
-    session?.agentType?.split('-', '_')?.joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
+/** The synced Agent Config's name first; a custom command's `custom-<id>` agent type is internal and never shown. */
+private fun agentLabel(session: CatalogSession?, configName: String?, custom: String): String =
+    configName ?: (if (session?.cliType == "custom") custom else null)
+        ?: session?.agentType?.split('-', '_')?.joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
         ?: session?.modelName ?: "Agent"
 
 /** "Worked for 8s" / "1m 5s" once the turn finished; [format] holds one `%1$s`. */
@@ -1422,12 +1610,18 @@ internal fun ChatComposer(
     onRemoveAttachment: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    /** Quote cards waiting with the attachments; a tap reopens the comment sheet. */
+    quotes: List<MessageQuoteCard> = emptyList(),
+    onOpenQuote: (MessageQuoteCard) -> Unit = {},
+    onRemoveQuote: (String) -> Unit = {},
     usage: app.lody.android.runtime.SessionUsage? = null,
     /** The Free session reached its turn limit, so the closed composer says so instead of "connecting". */
     quotaLocked: Boolean = false,
+    sending: Boolean = false,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
+    val active = enabled && !sending
     // Web: "Work with <assistant>" — the Agent Role when one is, else the conversation's agent.
     val workWith = roleName ?: agentName
     val placeholder = when {
@@ -1437,7 +1631,7 @@ internal fun ChatComposer(
         else -> stringResource(R.string.create_composer_placeholder_agent, workWith)
     }
     var focused by remember { mutableStateOf(false) }
-    val expanded = focused || attachments.isNotEmpty()
+    val expanded = focused || attachments.isNotEmpty() || quotes.isNotEmpty()
     // Dismissing the keyboard (Back, swipe) also ends editing.
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     @OptIn(ExperimentalLayoutApi::class)
@@ -1449,15 +1643,16 @@ internal fun ChatComposer(
     )
     val shape = RoundedCornerShape(radius)
     val runConfigLabel = stringResource(R.string.chat_run_config)
-    val showStop = stoppable && prompt.text.isBlank() && attachments.isEmpty()
-    val ready = if (showStop) !stopping else enabled && (prompt.text.isNotBlank() || attachments.isNotEmpty())
+    val showStop = stoppable && prompt.text.isBlank() && attachments.isEmpty() && quotes.isEmpty()
+    // A quote card alone is a message.
+    val ready = if (showStop) !stopping else active && (prompt.text.isNotBlank() || attachments.isNotEmpty() || quotes.isNotEmpty())
 
     @Composable
     fun Plus() {
         Box {
             val attach = stringResource(R.string.create_attach)
             var attachMenu by remember { mutableStateOf(false) }
-            IconButton(onClick = { attachMenu = true }, enabled = enabled, modifier = Modifier.semantics { contentDescription = attach }.widthIn(min = LodySize.controlMd)) {
+            IconButton(onClick = { attachMenu = true }, enabled = active, modifier = Modifier.semantics { contentDescription = attach }.widthIn(min = LodySize.controlMd)) {
                 Icon(LodyIcons.Plus, contentDescription = null, tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
             }
             DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
@@ -1511,9 +1706,9 @@ internal fun ChatComposer(
                 .animateContentSize(androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow))
                 .padding(LodySpacing.xs),
         ) {
-            // Picked attachments, one removable chip each, above the prompt (web / iOS attachment stack).
+            // Picked attachments, one removable chip each, then quote cards, above the prompt (web / iOS attachment stack).
             androidx.compose.animation.AnimatedVisibility(
-                attachments.isNotEmpty(),
+                attachments.isNotEmpty() || quotes.isNotEmpty(),
                 enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
                 exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
             ) {
@@ -1536,6 +1731,9 @@ internal fun ChatComposer(
                             }
                         }
                     }
+                    items(quotes, key = { "quote:${it.id}" }) { card ->
+                        QuoteCardChip(card, onOpen = { onOpenQuote(card) }, onRemove = { onRemoveQuote(card.id) }, modifier = Modifier.animateItem())
+                    }
                 }
             }
             // At rest the line holds +, the prompt, the agent's mark ⌄ and Send; open, only the prompt.
@@ -1545,7 +1743,7 @@ internal fun ChatComposer(
                     value = prompt,
                     visualTransformation = referencePresentation,
                     onValueChange = onPromptChange,
-                    enabled = enabled,
+                    enabled = active,
                     textStyle = type.body.copy(color = colors.textPrimary),
                     cursorBrush = SolidColor(colors.accentDefault),
                     minLines = if (focused) 3 else 1,
@@ -1710,7 +1908,7 @@ internal fun ChatActionBar(
     val stages: List<@Composable (Boolean) -> Unit> = listOf<@Composable (Boolean) -> Unit>({ fill -> Line(fill, diffDot = false, caps.first()) }) +
         caps.map { cap -> @Composable { fill: Boolean -> Line(fill, diffDot = true, cap) } }
     FirstThatFits(
-        Modifier.padding(horizontal = LodySpacing.md).padding(top = LodySpacing.xs).fillMaxWidth(),
+        Modifier.padding(horizontal = LodyLayout.screenPaddingX).padding(top = LodySpacing.xs).fillMaxWidth(),
         stages = stages,
     ) { Line(fill = true, diffDot = true, caps.last(), last = true) }
 }

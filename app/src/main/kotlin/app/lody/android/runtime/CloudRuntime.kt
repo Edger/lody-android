@@ -31,6 +31,16 @@ sealed interface RuntimeCommand {
     data class SetTabClosed(val id: String, val closed: Boolean) : RuntimeCommand
     /** Archives or unarchives a conversation (upstream `archiveSession`); a write, never replayed. */
     data class ArchiveSession(val id: String, val archived: Boolean) : RuntimeCommand
+    /**
+     * One Status view or pin-section change (runtime `statusViewCommand`): the runtime plans it
+     * against its replica with the shared planner and writes. [scope] is the list the gesture
+     * happened in (`move.beforeId` resolves against it). A write, never replayed.
+     */
+    data class StatusView(val command: StatusViewCommand, val scope: StatusViewScope? = null) : RuntimeCommand
+    /** The four Later presets resolved on the runtime's synced clock (`snoozePresets`). Read only. */
+    data object SnoozePresets : RuntimeCommand
+    /** Records that the conversation was read up to [lastReadAt] (upstream `markSessionRead`; monotonic). */
+    data class MarkRead(val id: String, val lastReadAt: Long) : RuntimeCommand
     /** [billing]: a Tab is a session, so the free-plan session quota applies (null fails open). */
     data class CreateTab(val parentId: String, val id: String, val title: String, val billing: org.json.JSONObject? = null) : RuntimeCommand
     /** [includeOffline]: schedule targets, every readable computer's agents; new chats keep online agents. */
@@ -136,6 +146,9 @@ sealed interface RuntimeResult {
     /** Upstream send state (`sent` / `queued` / `not_sent` / `unknown`); a machine ACK is delivery only. */
     data class Sent(val state: String, val reason: String? = null) : RuntimeResult
     data object Accepted : RuntimeResult
+    data class SnoozePresets(val value: List<SnoozePreset>) : RuntimeResult
+    /** Session metadata patches and pin-section rows a Status view command wrote; 0 is refused or a no-op. */
+    data class StatusViewWrites(val writes: Int) : RuntimeResult
     data class Detail(val value: StepDetail) : RuntimeResult
     data class Diff(val value: FileDiff) : RuntimeResult
     data class Directory(val value: DirectoryListing) : RuntimeResult
@@ -160,6 +173,8 @@ data class CatalogPullRequest(
 data class CatalogSession(
     val id: String, val machineId: String, val projectId: String, val title: String, val status: String, val archived: Boolean, val pinned: Boolean, val createdAt: String,
     val branchName: String? = null, val lastMessageAt: Long? = null, val lastReadAt: Long? = null, val awaitingUserSince: Long? = null,
+    /** Status view metadata (display only; the runtime's layout decides tiers and order). */
+    val orderKey: String? = null, val pinSectionId: String? = null, val snoozedUntil: Long? = null, val settledAt: Long? = null, val focusRestoredAt: Long? = null,
     val pullRequests: List<CatalogPullRequest> = emptyList(),
     /** The owning Lody user (session meta `userId`); null from caches written before the field. */
     val userId: String? = null,
@@ -234,6 +249,10 @@ data class CatalogSnapshot(
     val machineEmulators: Map<String, String> = emptyMap(),
     /** Computer id to numeric protocol capability versions advertised by its CLI. */
     val machineCapabilities: Map<String, Map<String, Int>> = emptyMap(),
+    /** The shared runtime's Status view layout for both scopes; null from older runtimes and caches. */
+    val statusView: StatusView? = null,
+    /** Workspace pin sections, in order. */
+    val pinSections: List<PinSection> = emptyList(),
 )
 /**
  * One transcript turn. [timestamp] is ISO-8601; [status] is upstream's (`seen` once the agent
@@ -241,6 +260,13 @@ data class CatalogSnapshot(
  * [startedAt] / [endedAt] (epoch ms) time an agent turn; [model] names its model.
  */
 data class MessageReference(val start: Int, val end: Int)
+/**
+ * A quote block in a user turn's shown text (`message_quote` span, quoteVersion 1, read by the
+ * runtime as Web `readMessageQuote`): its range and the decoded, read-only snapshot.
+ */
+data class MessageQuoteBlock(val start: Int, val end: Int, val snapshot: String)
+/** A composer quote card: the read-only snapshot of a quoted passage and the reader's comment on it. */
+data class MessageQuoteCard(val id: String, val snapshot: String, val comment: String)
 
 data class SessionMessage(
     val id: String,
@@ -248,6 +274,8 @@ data class SessionMessage(
     val text: String,
     val streaming: Boolean,
     val references: List<MessageReference> = emptyList(),
+    /** A user turn's quote blocks in [text], in order. */
+    val quotes: List<MessageQuoteBlock> = emptyList(),
     val timestamp: String? = null,
     val status: String = "",
     val userId: String? = null,
@@ -300,6 +328,13 @@ sealed interface TurnItem {
         /** The step's permission request, when it has one. */
         val permission: ToolPermission? = null,
     ) : TurnItem
+    /**
+     * Context compaction (a `tool_call` with `activityKind: context_compaction`, web
+     * `isProcessStatusToolCall`): one status line, never a step or part of an activity group.
+     */
+    data class Compaction(override val id: String, val status: String) : TurnItem {
+        val active: Boolean get() = status == "pending" || status == "in_progress"
+    }
     /** A proposed plan (Markdown); never folded. [streaming] while the agent still writes it. */
     data class ProposedPlan(override val id: String, val markdown: String, val streaming: Boolean = false) : TurnItem
     /** The agent's checklist (`plan`); never folded. */
@@ -313,7 +348,12 @@ sealed interface TurnItem {
      * A file the agent shared (`lody_upload_files`, web `SessionFileCard`): its name, type and
      * size; never folded.
      */
-    data class File(override val id: String, val fileName: String, val mimeType: String? = null, val sizeBytes: Long? = null) : TurnItem
+    data class File(
+        override val id: String, val fileName: String, val mimeType: String? = null, val sizeBytes: Long? = null,
+        val fileId: String = "", val storageSessionId: String? = null, val transport: String? = null,
+    ) : TurnItem {
+        val ref: app.lody.android.chat.SessionFileRef get() = app.lody.android.chat.SessionFileRef(fileId, fileName, storageSessionId, transport, sizeBytes, mimeType)
+    }
     /** A failure or notice the turn ended with; never folded. */
     data class Notice(override val id: String, val text: String, val failure: Boolean) : TurnItem
     /**
@@ -366,6 +406,8 @@ data class SendTextRequest(
     val configOptionValues: Map<String, Any> = emptyMap(),
     /** Steer the running reply instead of queueing (the "Guide" preference, when the agent can steer). */
     val guide: Boolean = false,
+    /** Quote cards, in order; the runtime appends them after [text] in the Web wire format. */
+    val quotes: List<MessageQuoteCard> = emptyList(),
 )
 /** What a turn says about its Agent Role: inherit the latest turn's, an explicit None, or a Role. */
 sealed interface RoleSend {
@@ -373,7 +415,8 @@ sealed interface RoleSend {
     data object None : RoleSend
     data class Role(val id: String) : RoleSend
 }
-data class MessageAttachment(val name: String, val image: Boolean)
+/** A turn's attachment; [file] is set for an uploaded file the reader can open. */
+data class MessageAttachment(val name: String, val image: Boolean, val file: app.lody.android.chat.SessionFileRef? = null)
 /**
  * The latest user turn's run config (runtime session `composer`), what the next turn would use.
  * [roleKnown] is false when the turn says nothing about a Role; then [agentRoleId] null is
@@ -552,6 +595,8 @@ data class MentionCandidate(
     val path: String, val name: String, val kind: String, val subtitle: String = "", val insertText: String? = null,
     /** A Role's emoji: it leads the row instead of an icon (as the run-config Role row). */
     val emoji: String? = null,
+    /** A prompt shortcut's listed revision; a body read ahead belongs to exactly this revision. */
+    val revision: String? = null,
 ) {
     /**
      * Folders browse with the files; prompt shortcuts (listed with the agent's commands, inserting

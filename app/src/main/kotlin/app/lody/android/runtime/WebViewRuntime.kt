@@ -62,6 +62,15 @@ open class WebViewRuntime internal constructor(
             call("archiveSession", JSONArray().put(command.id).put(command.archived), CommandDeadline.WRITE)
             RuntimeResult.Accepted
         }
+        is RuntimeCommand.StatusView -> {
+            val value = call("statusViewCommand", JSONArray().put(StatusViewJson.command(command.command)).put(command.scope?.key ?: JSONObject.NULL), CommandDeadline.WRITE) as JSONObject
+            RuntimeResult.StatusViewWrites((value.opt("writes") as? Number)?.toInt()?.coerceAtLeast(0) ?: 0)
+        }
+        RuntimeCommand.SnoozePresets -> RuntimeResult.SnoozePresets(StatusViewJson.presets(call("snoozePresets", deadline = CommandDeadline.QUERY) as JSONObject))
+        is RuntimeCommand.MarkRead -> {
+            call("markSessionRead", JSONArray().put(command.id).put(command.lastReadAt), CommandDeadline.WRITE)
+            RuntimeResult.Accepted
+        }
         is RuntimeCommand.CreateTab -> {
             val value = call("createTab", JSONArray().put(command.parentId).put(command.id).put(command.title).put(backend.preferRoost).put(command.billing ?: JSONObject.NULL), CommandDeadline.WRITE) as JSONObject
             RuntimeResult.Created(CreationReceipt(command.id, value.getString("state"), value.optString("reason").ifBlank { null }))
@@ -135,6 +144,7 @@ open class WebViewRuntime internal constructor(
                         it.getString("path"), it.optString("name", it.getString("path")), it.optString("kind", "file"),
                         it.optString("subtitle"), it.optString("insertText").ifBlank { null },
                         it.optString("emoji").ifBlank { null },
+                        it.optString("revision").ifBlank { null },
                     )
                 },
                 value.optBoolean("truncated"), value.optBoolean("incomplete"),
@@ -166,6 +176,7 @@ open class WebViewRuntime internal constructor(
             }
             if (request.configOptionValues.isNotEmpty()) payload.put("configOptionValues", JSONObject(request.configOptionValues))
             if (request.attachments.isNotEmpty()) payload.put("attachments", JSONArray(request.attachments))
+            if (request.quotes.isNotEmpty()) payload.put("quotes", JSONArray(request.quotes.map { JSONObject().put("id", it.id).put("snapshot", it.snapshot).put("comment", it.comment) }))
             command.billing?.let { payload.put("billingEntitlement", it) }
             val value = call("sendText", JSONArray().put(payload), CommandDeadline.WRITE) as JSONObject
             RuntimeResult.Sent(value.optString("state", "unknown"), value.optString("reason").ifBlank { null })

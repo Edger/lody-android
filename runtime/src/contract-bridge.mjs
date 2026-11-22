@@ -1,6 +1,6 @@
 // Translate Android's native command surface to the shared runtime envelope contract.
 export function contractBridge(runtime, emit) {
- const pending=new Map(), grants=new Map(), clouds=new Map(), tokens=new Map(); let serial=0, workspace='';
+ const pending=new Map(), grants=new Map(), clouds=new Map(), tokens=new Map(), localGrants=new Set(); let serial=0, workspace='';
  // Prompt shortcut Convex calls the runtime asks the native host to make (iOS `shortcutCloud`).
  const cloudOperations=new Set(['listAccessibleDocuments','getStreamToken','stageDocument','activateDocument']);
  const tokenOperations=new Set(['previewToken','historyToken']);
@@ -61,7 +61,7 @@ export function contractBridge(runtime, emit) {
  return {
   ping:async()=>{await invoke('ping');return true;},
   setActive:async active=>{await invoke('setActive',{active});return true;},
-  start:async(workspaceId,userId='',active=false)=>{workspace=workspaceId;await invoke('start',{workspaceId,userId,active});return true;},
+  start:async(workspaceId,userId='',active=false,workspaceReadOnly=false)=>{workspace=workspaceId;await invoke('start',{workspaceId,userId,active,...(workspaceReadOnly?{workspaceReadOnly:true}:{})});return true;},
   probeSchema:()=>workspace?invoke('probeSchema',{workspaceId:workspace}):ready.then(()=>({creationOptionsTrial:{},machines:{}})),
   session:id=>invoke('openSession',{sessionId:id}),
   loadOlderSession:args=>invoke('loadOlderSession',args),
@@ -78,6 +78,10 @@ export function contractBridge(runtime, emit) {
   checkTurnQuota:args=>invoke('checkTurnQuota',{sessionId:args.sessionId,billingEntitlement:args.billingEntitlement??null}),
   setTabClosed:args=>invoke('setTabClosed',args),
   archiveSession:args=>invoke('archiveSession',args),
+  // Status view: one planned command (Later, Settle, Move to Focus, pin, move, sections) and the Later presets.
+  statusViewCommand:args=>invoke('statusViewCommand',args),
+  snoozePresets:args=>invoke('snoozePresets',args),
+  markSessionRead:args=>invoke('markSessionRead',args),
   // A Tab is a session: the contract requires the entitlement (null fails open), as on createSession.
   createTab:args=>invoke('createTab',{...args,billingEntitlement:args.billingEntitlement??null}),
   // Agent Roles readable by this user, listed for the new-chat Role row.
@@ -112,6 +116,19 @@ export function contractBridge(runtime, emit) {
   decideProposal:args=>invoke('decideProposal',args),
   shortcutCloud,
   machineToken,
-  grant(value){for(const e of grants.values())receive(value?{...e,kind:'result',payload:value}:{...e,kind:'error',payload:undefined,error:{code:'grant_unavailable',retryable:true}});grants.clear();return true;},
+  grant(value){
+   for(const e of grants.values())receive(value?{...e,kind:'result',payload:value}:{...e,kind:'error',payload:undefined,error:{code:'grant_unavailable',retryable:true}});grants.clear();
+   for(const waiter of localGrants)waiter(value);localGrants.clear();
+   return true;
+  },
+  // A workspace Streams grant for an Android adapter read (the turn's MCP defaults), asked of the
+  // native host like the runtime's own grant requests and answered by the same `grant` reply.
+  requestGrant(){
+   return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{localGrants.delete(waiter);reject(Error('grant_unavailable'));},30000);
+    const waiter=value=>{clearTimeout(timer);if(value)resolve(value);else reject(Error('grant_unavailable'));};
+    localGrants.add(waiter);emit({type:'grant'});
+   });
+  },
  };
 }

@@ -155,12 +155,16 @@ class RuntimeProtocolTest {
   assertEquals(RunChoice(), composer("""{}"""))
  }
  @Test fun composerChoiceAndUserAttachmentsAreParsed() {
-  val body="""{"v":1,"status":"live","composer":{"modelId":"gpt","modeId":"plan","effort":"high","configOptionValues":{"fast":true}},"entries":[{"id":"u","role":"user","finished":true,"items":[{"type":"image_group","images":[{"id":"i1","fileName":"a.png"},{"id":"i2","fileName":"b.png"}]},{"type":"file","file":{"id":"f1","fileName":"notes.md"}}]}]}"""
+  val body="""{"v":1,"status":"live","composer":{"modelId":"gpt","modeId":"plan","effort":"high","configOptionValues":{"fast":true}},"entries":[{"id":"u","role":"user","finished":true,"items":[{"type":"image_group","images":[{"id":"i1","fileName":"a.png"},{"id":"i2","fileName":"b.png"}]},{"type":"file","file":{"id":"f1","fileName":"notes.md","storageSessionId":"parent","transport":"r2","sizeBytes":12}}]}]}"""
   val snapshot=(RuntimeProtocol.event(JSONObject().put("type","session").put("sessionId","s").put("session",body)) as RuntimeEvent.SessionUpdated).snapshot
   // Agent switches (Fast) come back so the chip and sheet reopen on them; no Role was said.
   assertEquals(RunChoice("gpt","plan","high",mapOf("fast" to true)),snapshot.composer)
   // An attachment-only user turn stays in the transcript.
-  assertEquals(listOf(MessageAttachment("a.png",true),MessageAttachment("b.png",true),MessageAttachment("notes.md",false)),snapshot.messages.single().attachments)
+  // An uploaded file keeps what opening it needs: its id, the session that stores it, transport and size.
+  val notes=app.lody.android.chat.SessionFileRef("f1","notes.md","parent","r2",12)
+  assertEquals(listOf(MessageAttachment("a.png",true),MessageAttachment("b.png",true),MessageAttachment("notes.md",false,notes)),snapshot.messages.single().attachments)
+  assertTrue(notes.downloadable && notes.markdown)
+  assertFalse(notes.copy(transport="local").downloadable)
  }
  @Test fun sessionProjectionIsNotDropped() {
   val frame=JSONObject().put("type","session").put("sessionId","s").put("session", """{"v":1,"status":"live","entries":[]}""")
@@ -210,6 +214,21 @@ class RuntimeProtocolTest {
   assertEquals(FileContent.Binary("logo.png", 8, null, "iVBORw0KGgo="), RuntimeProtocol.file(JSONObject("""{"status":"ok","path":"logo.png","kind":"binary","base64":"iVBORw0KGgo=","bytes":8}"""), "logo.png"))
   assertEquals(FileContent.Failed("big.md", "too_large"), RuntimeProtocol.file(JSONObject("""{"status":"error","path":"big.md","code":"too_large"}"""), "big.md"))
   assertEquals(FileContent.Failed("odd.md", "read_failed"), RuntimeProtocol.file(JSONObject("""{"status":"ok","kind":"text"}"""), "odd.md"))
+ }
+ @Test fun catalogCarriesTheStatusViewLayoutAndPinSections() {
+  val session = """{"id":"s","machineId":"m","projectId":"p","title":"t","status":"idle","archived":false,"pinned":true,"createdAt":"2026-01-01T00:00:00Z","orderKey":"a0","pinSectionId":"x","snoozedUntil":null}"""
+  val layout = """{"pinned":[{"sectionId":"x","name":"Ops","rows":[{"id":"s","tier":"pinned","children":[],"activityAt":3,"unread":false,"snoozedUntil":null,"woken":false,"canManage":true,"canPrefer":true}],"hiddenCount":0}],"focus":[],"later":[],"settled":[],"nextChangeAt":null}"""
+  fun catalog(view: String) = (RuntimeProtocol.event(JSONObject().put("type", "catalog").put("revision", 1).put("catalog",
+   """{"projects":[],"sessions":[$session],"machineIds":["m"],"pinSections":[{"id":"x","name":"Ops","orderKey":"a0"},{"name":"no id"}],"statusView":$view}""")) as RuntimeEvent.CatalogUpdated).snapshot
+  val snapshot = catalog("""{"mine":$layout,"team":$layout}""")
+  assertEquals(listOf(PinSection("x", "Ops", "a0")), snapshot.pinSections)
+  assertEquals("s", snapshot.statusView?.team?.pinned?.single()?.rows?.single()?.id)
+  assertEquals("x", snapshot.sessions.single().pinSectionId)
+  assertEquals("a0", snapshot.sessions.single().orderKey)
+  // A layout this client cannot read leaves the catalog usable without one.
+  val unreadable = catalog("""{"mine":$layout}""")
+  assertEquals(null, unreadable.statusView)
+  assertEquals(1, unreadable.sessions.size)
  }
  @Test fun previewsCrossTheNativeBoundary() {
   val token = RuntimeProtocol.event(JSONObject().put("type", "machineToken").put("operation", "historyToken").put("requestId", "r").put("intent", "{\"workspaceId\":\"w\"}"))

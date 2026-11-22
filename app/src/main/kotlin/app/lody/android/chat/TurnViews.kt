@@ -106,7 +106,7 @@ private fun LazyListScope.content(
     respond: PermissionResponder?,
 ) {
     when (val value = block.item) {
-        is TurnItem.Text -> prose(block.key, entry.prose[value.id], secondary = false)
+        is TurnItem.Text -> prose(block.key, entry.prose[value.id], secondary = false, quotable = true)
         is TurnItem.ProposedPlan -> proposedPlan(entry, value, block.key, open, toggle)
         is TurnItem.Checklist -> item(key = block.key, contentType = "checklist") { Checklist(value, Modifier.animateItem()) }
         is TurnItem.Notice -> item(key = block.key, contentType = "notice") { Notice(value, Modifier.animateItem()) }
@@ -117,7 +117,33 @@ private fun LazyListScope.content(
             if (value.kind == "switch_mode" && (value.plan != null || value.permission != null)) planExit(entry, value, block.key, open, toggle, details, respond)
             else step(entry, value, block.key, entry.working && value.status == "in_progress", open, toggle, details, respond)
         is TurnItem.Thought -> prose(block.key, entry.prose[value.id], secondary = true)
+        is TurnItem.Compaction -> item(key = block.key, contentType = "compaction") { Compaction(value, entry.working && value.active, Modifier.animateItem()) }
         is TurnItem.Task -> Unit
+    }
+}
+
+/** Web `ToolCallBlock` compaction status: a spinner and pulse while it runs, then its outcome, no warning tone. */
+@Composable
+private fun Compaction(item: TurnItem.Compaction, live: Boolean, modifier: Modifier = Modifier) {
+    val colors = LodyTheme.colors
+    val label = when {
+        live -> R.string.chat_compacting
+        item.status == "failed" -> R.string.chat_compaction_failed
+        else -> R.string.chat_compacted
+    }
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = TranscriptMargin, vertical = LodySpacing.xxs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
+    ) {
+        if (live) androidx.compose.material3.CircularProgressIndicator(Modifier.size(LodyIconSize.xs), color = colors.textSecondary, strokeWidth = 1.5.dp)
+        Text(
+            stringResource(label),
+            style = LodyTheme.typography.footnote,
+            color = colors.textSecondary,
+            maxLines = 1,
+            modifier = if (live) Modifier.shimmer() else Modifier,
+        )
     }
 }
 
@@ -152,19 +178,20 @@ private fun LazyListScope.step(
     stepPermission(entry, tool, key, details, respond)
 }
 
-/** Each top-level Markdown block is its own lazy row, so streaming re-renders only the tail. */
-private fun LazyListScope.prose(key: String, markdown: MarkdownBlocks?, secondary: Boolean) {
+/**
+ * Each top-level Markdown block is its own lazy row, so streaming re-renders only the tail. An
+ * answer's text ([quotable]) is selectable within its block, with Quote in the selection menu.
+ */
+private fun LazyListScope.prose(key: String, markdown: MarkdownBlocks?, secondary: Boolean, quotable: Boolean = false) {
     val blocks = markdown?.blocks ?: return
     blocks.forEachIndexed { index, text ->
         item(key = "$key#$index", contentType = "markdown") {
-            MarkdownBlock(
-                text,
-                Modifier
-                    .animateItem()
-                    .padding(horizontal = TranscriptMargin)
-                    .padding(bottom = LodySpacing.md),
-                secondary = secondary,
-            )
+            val modifier = Modifier
+                .animateItem()
+                .padding(horizontal = TranscriptMargin)
+                .padding(bottom = LodySpacing.md)
+            if (quotable) QuotableSelection(modifier) { MarkdownBlock(text, secondary = secondary) }
+            else MarkdownBlock(text, modifier, secondary = secondary)
         }
     }
 }
@@ -240,18 +267,20 @@ internal fun ToolStep(
     val file = item.path?.substringAfterLast('/')?.takeIf { it.isNotBlank() && item.kind in FileKinds }
     // A title already opening with a capitalized word is an authored label and keeps it (web).
     val authored = item.title.matches(Regex("^[A-Z][a-z]+[\\s:(].*", RegexOption.DOT_MATCHES_ALL))
+    // A title relative to the working directory collapses its run of "../" into "…/" (iOS #152).
+    val title = compactParentHops(item.title)
     val text = buildAnnotatedString {
         when {
             file != null -> {
                 verb?.let { withStyle(SpanStyle(color = colors.textSecondary)) { append(it); append(' ') } }
                 withStyle(SpanStyle(color = colors.textTertiary)) { append(file) }
             }
-            verb != null && !authored && item.title.isNotBlank() -> {
+            verb != null && !authored && title.isNotBlank() -> {
                 withStyle(SpanStyle(color = colors.textSecondary)) { append(verb); append(' ') }
                 val command = item.kind == "execute" || item.kind == "bash"
-                withStyle(SpanStyle(color = colors.textTertiary, fontFamily = if (command) type.code.fontFamily else null)) { append(item.title) }
+                withStyle(SpanStyle(color = colors.textTertiary, fontFamily = if (command) type.code.fontFamily else null)) { append(title) }
             }
-            else -> withStyle(SpanStyle(color = colors.textSecondary)) { append(item.title.ifBlank { verb.orEmpty() }) }
+            else -> withStyle(SpanStyle(color = colors.textSecondary)) { append(title.ifBlank { verb.orEmpty() }) }
         }
     }
     val state = expanded?.let { stringResource(if (it) R.string.home_tree_expanded else R.string.home_tree_collapsed) }
@@ -259,9 +288,10 @@ internal fun ToolStep(
     Row(
         modifier
             .fillMaxWidth()
+            // Every step row keeps one height whether or not it opens a detail (iOS #152).
+            .heightIn(min = 32.dp)
             .then(
                 if (expanded != null) Modifier
-                    .heightIn(min = 32.dp)
                     .clickable(role = Role.Button) { onToggle(!expanded) }
                     .semantics { stateDescription = state.orEmpty() }
                 else Modifier,
@@ -294,6 +324,10 @@ internal fun ToolStep(
 }
 
 private val FileKinds = setOf("read", "edit", "write", "delete", "move")
+
+private val ParentHops = Regex("(?:\\.\\./){2,}")
+
+internal fun compactParentHops(text: String): String = text.replace(ParentHops, "…/")
 
 @Composable
 private fun stepVerb(kind: String, running: Boolean): String? {

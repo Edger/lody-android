@@ -1,4 +1,5 @@
 import { effortsFor } from '../vendor/cloud-runtime/src/protocol/capability.ts';
+import { appendMessageQuotes, quoteCards } from './message-quotes.mjs';
 // Android-only text creation adapter. Shared CRDT persistence and dispatch remain upstream.
 // The native host's workspace plan read (iOS `WorkspaceBilling`), or null when unavailable: the
 // shared runtime then fails open, as the other clients do.
@@ -43,19 +44,16 @@ export function createCommands(runtime, sendTurn, identity) {
    const scope=identity();if(!scope?.userId)throw Error('not_connected');
    return runtime.projectGroups({workspaceId:scope.workspaceId,userId:scope.userId});
   },
-  // A prompt shortcut's body for the composer (web `prepareShortcutSelection`): the index entry
-  // by id, then its body for that revision. Returns the prompt and its references; a read.
+  // A prompt shortcut's body for the composer (web `prepareShortcutSelection`): runtime `select`
+  // checks the id against the last listing and answers from its prefetched bodies, without an
+  // index read. Returns the prompt, its references and its revision; a read.
   async shortcutBody(id) {
    const scope=identity();if(!scope?.userId)throw Error('not_connected');
    if(typeof id!=='string' || !id || id.length>200)throw Error('invalid_request');
-   const base={workspaceId:scope.workspaceId,userId:scope.userId};
-   const list=await runtime.promptShortcuts({...base,action:'list'});
-   const entry=(list?.entries??[]).find(item=>item.id===id);
-   if(!entry)throw Error('shortcut_unavailable');
-   const read=await runtime.promptShortcuts({...base,action:'read',entry});
+   const read=await runtime.promptShortcuts({workspaceId:scope.workspaceId,userId:scope.userId,action:'select',id});
    const shortcut=read?.shortcut;
    if(!shortcut || typeof shortcut.prompt!=='string')throw Error('shortcut_unavailable');
-   return {prompt:shortcut.prompt,mentions:Array.isArray(shortcut.mentions)?shortcut.mentions:[]};
+   return {prompt:shortcut.prompt,mentions:Array.isArray(shortcut.mentions)?shortcut.mentions:[],...(typeof shortcut.revision==='string'?{revision:shortcut.revision}:{})};
   },
   // `source` names what the references come from: a conversation, or the new-chat page's
   // project / computer / agent (iOS `MentionSource`); only non-empty strings cross.
@@ -84,7 +82,11 @@ export function createCommands(runtime, sendTurn, identity) {
    // Attachments are server references uploaded natively; upstream validates each block.
    const attachments=input.attachments??[];
    if(!Array.isArray(attachments) || attachments.length>16 || attachments.some(block=>!block || typeof block!=='object' || !['image','file'].includes(block.type)) || JSON.stringify(attachments).length>64000)throw Error('invalid_send');
-   if(!input.text.trim() && !attachments.length)throw Error('invalid_send');
+   // Quote cards (`{id, snapshot, comment}`) follow the main text in the Web wire format; the
+   // send hook expands mentions in the main text before it appends them.
+   const quotes=quoteCards(input.quotes);
+   if(!input.text.trim() && !attachments.length && !quotes.length)throw Error('invalid_send');
+   const text=quotes.length ? appendMessageQuotes(input.text.trim(),[],quotes).text : input.text;
    for(const key of ['machineId','cliType','agentType'])if(typeof input[key]!=='string' || !input[key])throw Error('invalid_send');
    // The composer's run-config choice: an omitted field keeps the session's previous one; a null
    // model or effort clears it to the agent default (upstream `sendTurn`).
@@ -110,8 +112,13 @@ export function createCommands(runtime, sendTurn, identity) {
    const scope=identity();if(!scope?.userId)throw Error('not_connected');
    try {
     await runtime.ensureSession({sessionId:input.sessionId});
+   } catch {
     signal?.throwIfAborted();
-    const sent=await sendTurn({billingEntitlement:billingEntitlement(input.billingEntitlement),id:input.turnId,sessionId:input.sessionId,machineId:input.machineId,userId:scope.userId,text:input.text,cliType:input.cliType,agentType:input.agentType,...choice,...(attachments.length?{attachmentBlocks:attachments}:{}),...(input.resume?{resume:input.resume}:{}),...(input.guide===true?{guide:true}:input.queue?{queue:true}:{})});
+    return {state:'not_sent',reason:'session_not_ready'};
+   }
+   try {
+    signal?.throwIfAborted();
+    const sent=await sendTurn({billingEntitlement:billingEntitlement(input.billingEntitlement),id:input.turnId,sessionId:input.sessionId,machineId:input.machineId,userId:scope.userId,text,...(quotes.length?{quotes,quoteMain:input.text.trim()}:{}),cliType:input.cliType,agentType:input.agentType,...choice,...(attachments.length?{attachmentBlocks:attachments}:{}),...(input.resume?{resume:input.resume}:{}),...(input.guide===true?{guide:true}:input.queue?{queue:true}:{})});
     return {state:sent.state,reason:sent.reason};
    } catch {return {state:'unknown'};}
   },

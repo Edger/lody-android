@@ -9,6 +9,21 @@
 
 package app.lody.android.home
 
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import sh.calvin.reorderable.ReorderableItem
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.LocalWindowInfo
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import app.lody.android.auth.WorkspaceMember
 
 import app.lody.android.designsystem.LodyFilledIconButton
@@ -60,6 +75,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.ui.platform.LocalDensity
 import app.lody.android.designsystem.LodyMotion
 import androidx.compose.foundation.lazy.LazyColumn
@@ -196,6 +216,8 @@ fun ChatListScreen(
     onOpenChat: (ChatItem) -> Unit,
     /** Archives or unarchives a conversation (runtime `archiveSession`); null while no workspace is selected. */
     onSetArchived: (suspend (String, Boolean) -> Unit)? = null,
+    /** Status view and pin-section writes (runtime `statusViewCommand`); null while no workspace is selected. */
+    statusView: StatusViewService? = null,
     onNewChat: () -> Unit,
     /** The Schedules tab's list and writes; none leaves the tab loading. */
     schedules: app.lody.android.schedules.ScheduleService? = null,
@@ -254,7 +276,7 @@ fun ChatListScreen(
     val selectGrouping = { next: HomeGrouping -> grouping = next; HomeGroupings.save(context, next) }
     var homeScope by remember { mutableStateOf(HomeGroupings.loadScope(context)) }
     val selectScope = { next: HomeScope -> homeScope = next; HomeGroupings.saveScope(context, next) }
-    var idleExpanded by rememberSaveable { mutableStateOf(false) }
+    var settledExpanded by rememberSaveable { mutableStateOf(false) }
     val owner = state.userId.takeIf { homeScope == HomeScope.Mine }
     val archivedDone = stringResource(R.string.home_archived_done)
     val archiveFailed = stringResource(R.string.home_archive_failed)
@@ -276,6 +298,69 @@ fun ChatListScreen(
         }
         Unit
     } }
+    // Status view actions: the Later sheet, the sub-conversation question and Undo live in one host.
+    val statusList = if (homeScope == HomeScope.Mine) app.lody.android.runtime.StatusViewScope.Mine else app.lody.android.runtime.StatusViewScope.Team
+    val snapshotNow by androidx.compose.runtime.rememberUpdatedState(state.snapshot)
+    // A role discovered after the runtime started can revoke an already-open action sheet.
+    val readOnly = state.userId?.let { state.members[it] }?.readOnly == true
+    val readOnlyNow by androidx.compose.runtime.rememberUpdatedState(readOnly)
+    val statusActions = rememberStatusActions(statusView.takeUnless { readOnly }, snackbar, statusList) { snapshotNow?.sessions.orEmpty() }
+    val statusFailed = stringResource(R.string.status_write_failed)
+    // A section name prompt: (section id or null for a new one, its name, the row to move into a new one).
+    var sectionDialog by remember { mutableStateOf<Triple<String?, String, String?>?>(null) }
+    var deleting by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // Section management follows the layout's grant, and waits until the section rows were read.
+    val manageSections = state.snapshot?.statusView?.let { it.sectionsLoaded && it.team.canManageSections } == true
+    val pinSections = remember(state.snapshot?.pinSections) { listOf<Pair<String?, String?>>(null to null) + state.snapshot?.pinSections.orEmpty().map { it.id to it.name } }
+    val statusControls = remember(statusActions, statusView, manageSections, statusList, readOnly, pinSections) {
+        if (statusActions == null || statusView == null || readOnly) null else {
+            val run: (app.lody.android.runtime.StatusViewCommand, (Boolean) -> Unit) -> Unit = { command, done ->
+                notices.launch {
+                    if (readOnlyNow) { done(false); return@launch }
+                    val ok = try { statusView.run(command, statusList) > 0 }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { false }
+                    done(ok)
+                    if (!ok) snackbar.showSnackbar(statusFailed)
+                }
+            }
+            StatusListControls(
+                actions = statusActions,
+                run = run,
+                manageSections = manageSections,
+                onNewSection = { moving -> sectionDialog = Triple(null, "", moving) },
+                onRenameSection = { id, name -> sectionDialog = Triple(id, name, null) },
+                onDeleteSection = { id, name -> deleting = id to name },
+                target = { chat ->
+                    val tree = snapshotNow?.let { ChatListModel.openedTree(it, chat.id) }.orEmpty()
+                    StatusTarget(chat.id, chat.tier, tree.map { it.id }, tree.count { ChatListModel.attention(it) == ChatAttention.Running })
+                },
+                pinSections = pinSections,
+            )
+        }
+    }
+    LaunchedEffect(readOnly) {
+        if (readOnly) { sectionDialog = null; deleting = null }
+    }
+    sectionDialog.takeUnless { readOnly }?.let { (id, name, moving) ->
+        SectionNameDialog(stringResource(if (id == null) R.string.status_section_new else R.string.status_section_rename), name, onDismiss = { sectionDialog = null }) { next ->
+            sectionDialog = null
+            val created = java.util.UUID.randomUUID().toString()
+            statusControls?.run?.invoke(
+                if (id == null) app.lody.android.runtime.StatusViewCommand.CreateSection(created, next)
+                else app.lody.android.runtime.StatusViewCommand.RenameSection(id, next),
+            ) { ok ->
+                // From a row's menu, the row then moves into the section it named.
+                if (ok && id == null && moving != null) statusControls.run(app.lody.android.runtime.StatusViewCommand.Move(moving, app.lody.android.runtime.StatusViewTarget.Pinned(created), null)) {}
+            }
+        }
+    }
+    deleting.takeUnless { readOnly }?.let { (id, name) ->
+        DeleteSectionDialog(name, onDismiss = { deleting = null }) {
+            deleting = null
+            statusControls?.run?.invoke(app.lody.android.runtime.StatusViewCommand.DeleteSection(id)) {}
+        }
+    }
     // The view menu's Archived switch (iOS `HomeArchive`): in memory, so every launch opens on open chats.
     var archived by remember { mutableStateOf(false) }
     // The Schedules view menu's Show finished switch: in memory, so ended schedules start hidden.
@@ -406,11 +491,12 @@ fun ChatListScreen(
                 listState = chatsListState,
                 projectIndex = !archived && grouping == HomeGrouping.Project,
                 owners = state.members.takeIf { homeScope == HomeScope.Team },
-                idleExpanded = idleExpanded,
-                onToggleIdle = { idleExpanded = !idleExpanded },
+                settledExpanded = settledExpanded,
+                onToggleSettled = { settledExpanded = !settledExpanded },
                 onOpenChat = onOpenChat,
                 onSetArchived = setArchived,
                 archivedList = archived,
+                status = statusControls.takeIf { !archived },
             )
             else -> SettingsHome(state, padding, onSelectWorkspace, onSignOut, onAgents = { agentsOpen = true }, onPreferences = { preferencesOpen = true }, onRoles = { rolesOpen = true }, onShortcuts = { shortcutsOpen = true }, onGitHub = { githubOpen = true }, onProjects = { projectsOpen = true }, onDeferred = { notice(deferredMessage) })
         }
@@ -835,7 +921,13 @@ internal fun HomeBottomBar(selected: HomeTab, collapsed: Boolean, onSelect: (Hom
 
 // MARK: - Lists
 
-/** Flat groups with a text header. The status view's idle group folds after [ChatListModel.IDLE_LIMIT] chats. */
+/**
+ * Flat groups with a text header. Each family (a root row and its opened children) is one list
+ * item, so it moves as a unit. With [status], rows offer the Status view actions: a long press
+ * opens the action menu and moving while pressed turns into a drag; swipes reveal Settle / Later
+ * (Archive on Settled) trailing and pin / unpin leading. Settled folds after
+ * [ChatListModel.SETTLED_LIMIT] conversations.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun HomeList(
@@ -844,14 +936,15 @@ internal fun HomeList(
     padding: PaddingValues,
     empty: String?,
     listState: LazyListState = rememberLazyListState(),
-    idleExpanded: Boolean = false,
-    onToggleIdle: () -> Unit = {},
+    settledExpanded: Boolean = false,
+    onToggleSettled: () -> Unit = {},
     owners: Map<String, WorkspaceMember>? = null,
     pinsLabels: Boolean = true,
     projectIndex: Boolean = false,
     /** A long press offers Archive, or in an [archivedList] Unarchive only (iOS row actions). */
     onSetArchived: ((ChatItem, Boolean) -> Unit)? = null,
     archivedList: Boolean = false,
+    status: StatusListControls? = null,
     onOpenChat: (ChatItem) -> Unit,
 ) {
     if (sections.isEmpty()) {
@@ -862,6 +955,8 @@ internal fun HomeList(
     // Resolved here: LazyListScope builders are not composable.
     val titles = sections.associate { it.id to it.header.title() }
     val showLess = stringResource(R.string.home_group_show_less)
+    val focusDrop = stringResource(R.string.status_focus_drop)
+    val hiddenLabels = sections.filter { it.hiddenCount > 0 }.associate { it.id to pluralStringResource(R.plurals.status_section_hidden, it.hiddenCount, it.hiddenCount) }
     val context = LocalContext.current
     var folded by remember { mutableStateOf(FoldedOpeners.load(context)) }
     val toggleOpener = { id: String ->
@@ -869,6 +964,7 @@ internal fun HomeList(
         FoldedOpeners.save(context, folded)
     }
     // Home labels collapse their group; search labels never do. Archived buckets reuse activity ids.
+    // The stored set records changes from each group's default (Later and Settled start collapsed).
     var collapsedGroups by remember { mutableStateOf(CollapsedGroups.load(context)) }
     val groupKey = { id: String -> if (archivedList) "archived:$id" else id }
     val toggleGroup = { id: String ->
@@ -877,9 +973,55 @@ internal fun HomeList(
         CollapsedGroups.save(context, collapsedGroups)
     }
     val shown = remember(sections, folded, collapsedGroups, pinsLabels, archivedList) {
-        sections.map { it.copy(chats = ChatListModel.fold(it.chats, folded), collapsed = pinsLabels && groupKey(it.id) in collapsedGroups) }
+        sections.map {
+            val changed = groupKey(it.id) in collapsedGroups
+            it.copy(chats = ChatListModel.fold(it.chats, folded), collapsed = pinsLabels && changed != (!archivedList && ChatListModel.collapsedByDefault(it.id)))
+        }
     }
+    val reorder = status != null && pinsLabels && !archivedList
+    // Drags reorder [ListSlot]s locally; the dropped order is held until the catalog reads back.
+    val computed = remember(shown, settledExpanded) { StatusMoves.slots(shown, settledExpanded) }
+    var drag by remember { mutableStateOf<HeldOrder?>(null) }
+    val held = drag
+    val windowInfo = LocalWindowInfo.current
+    val windowFocused = windowInfo.isWindowFocused
+    BackHandler(enabled = held?.dragging == true) { drag = null }
+    LaunchedEffect(windowFocused) {
+        if (!windowFocused && drag?.dragging == true) drag = null
+    }
+    // The dropped order holds until the catalog shows the row where it landed, or until two
+    // catalogs arrived after the write without it (another change won); a failed write releases.
+    LaunchedEffect(computed) {
+        val current = drag ?: return@LaunchedEffect
+        val command = current.command ?: return@LaunchedEffect
+        when {
+            StatusMoves.landed(computed, command) -> drag = null
+            current.written -> drag = if (current.misses + 1 >= HOLD_MISSES) null else current.copy(misses = current.misses + 1)
+        }
+    }
+    val slots = held?.slots ?: computed
+    val slop = LocalViewConfiguration.current.touchSlop
+    // Unfolded, so a folding family keeps its children composed while they animate away.
+    val families = remember(sections) { sections.flatMap { it.chats }.groupBy { it.nestedUnder ?: it.id } }
+    val haptics = LocalHapticFeedback.current
     val direction = LocalLayoutDirection.current
+    // The list sits below the app bar. Only the bottom bar overlaps its viewport.
+    val reorderState = rememberReorderableLazyListState(listState, scrollThresholdPadding = PaddingValues(bottom = padding.calculateBottomPadding())) { from, to ->
+        val current = drag?.takeIf { it.dragging } ?: return@rememberReorderableLazyListState
+        val target = to.key as String
+        val next = StatusMoves.swap(current.slots, from.key as String, target)
+        val moved = next !== current.slots
+        drag = current.copy(
+            slots = if (moved) StatusMoves.settle(next) else current.slots,
+            moved = current.moved || moved,
+            target = target,
+        )
+        if (moved) {
+            haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
+        }
+    }
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    val sectionOrder = shown.mapNotNull { (it.header as? HomeSection.Header.Pinned)?.sectionId }
     // Keep the sticky slot below the app bar; content padding alone scrolls away.
     ProjectIndexList(shown, titles, listState, projectIndex, padding.calculateBottomPadding(),
         Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
@@ -892,35 +1034,252 @@ internal fun HomeList(
                 bottom = padding.calculateBottomPadding(),
             ),
         ) {
-            shown.forEach { section ->
-                // Project groups lead their label with the project's logo.
-                val logo = section.repository.takeIf { section.header is HomeSection.Header.Project }
-                if (pinsLabels) {
-                    stickyHeader(key = section.id) {
-                        SectionTitle(titles.getValue(section.id), logo, collapsed = section.collapsed, onToggle = { toggleGroup(section.id) })
+            var open: HomeSection? = null
+            fun trailer(section: HomeSection) {
+                if (section.folds) item(key = "${section.id}/more") {
+                    MoreRow(
+                        if (settledExpanded) showLess else pluralStringResource(R.plurals.home_group_show_all, section.rootCount, section.rootCount),
+                        onToggleSettled,
+                        Modifier.animateItem(),
+                    )
+                }
+                if (!section.collapsed) hiddenLabels[section.id]?.let { label -> item(key = "${section.id}/hidden") { MoreRow(label, {}, Modifier.animateItem(), enabled = false) } }
+            }
+            slots.forEach { slot ->
+                when (slot) {
+                    is ListSlot.Header -> {
+                        open?.let(::trailer)
+                        val section = shown.firstOrNull { it.id == slot.section.id } ?: slot.section
+                        open = section
+                        // Project groups lead their label with the project's logo.
+                        val logo = section.repository.takeIf { section.header is HomeSection.Header.Project }
+                        val header = @Composable {
+                            SectionTitle(
+                                titles[section.id].orEmpty(), logo, collapsed = if (pinsLabels) section.collapsed else null, onToggle = { toggleGroup(section.id) },
+                                count = section.rootCount.takeIf { section.header is HomeSection.Header.Tier || (section.header is HomeSection.Header.Pinned && section.collapsed) },
+                                menu = status?.takeIf { reorder && it.manageSections && section.header is HomeSection.Header.Pinned }?.let { controls ->
+                                    { close -> SectionMenu(section, sectionOrder, controls, close) }
+                                },
+                            )
+                        }
+                        if (pinsLabels) {
+                            stickyHeader(key = slot.key) {
+                                // Headers are drop targets, never dragged: crossing one moves a row into the next section.
+                                if (reorder) ReorderableItem(reorderState, slot.key, animateItemModifier = Modifier) { header() } else header()
+                            }
+                        } else {
+                            item(key = slot.key) { header() }
+                        }
                     }
-                } else {
-                    item(key = section.id) { SectionTitle(titles.getValue(section.id), logo) }
+                    is ListSlot.Gap -> {
+                        // An empty Focus's landing slot: a drop target when rows can move, else just its hint.
+                        item(key = slot.key) {
+                            if (reorder) ReorderableItem(reorderState, slot.key) { MoreRow(focusDrop, {}, enabled = false) }
+                            else MoreRow(focusDrop, {}, Modifier.animateItem(), enabled = false)
+                        }
+                    }
+                    is ListSlot.Row -> {
+                        val section = open ?: return@forEach
+                        // A dropped row stays out of a collapsed section; only a dragged one must stay composed.
+                        if (section.collapsed && held?.dragging != true) return@forEach
+                        val root = slot.chat
+                        val kids = families[root.id].orEmpty().filter { it.nestedUnder == root.id }
+                        item(key = slot.key) {
+                            val family = @Composable { press: (() -> Modifier)?, dragging: Boolean ->
+                                FamilyRows(
+                                    section, root, kids, details, now, owners, folded, toggleOpener, archivedList, onSetArchived,
+                                    status.takeIf { pinsLabels }, shown, menuFor == root.id, { menuFor = if (it) root.id else null },
+                                    press, dragging, onOpenChat,
+                                )
+                            }
+                            if (reorder) {
+                                ReorderableItem(reorderState, slot.key) { dragging ->
+                                    val movable = root.canManage || root.canPrefer
+                                    val gesture = remember { DragGesture() }
+                                    family(if (!movable) null else { -> Modifier.draggableHandle(
+                                        onDragStarted = {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            menuFor = null
+                                            // From the order on screen (a previous drop may still be held).
+                                            drag = HeldOrder(slots, slots, dragging = true)
+                                        },
+                                        onDragStopped = {
+                                            val current = drag?.takeIf { it.dragging } ?: return@draggableHandle
+                                            // The reorder library needs its requested index during the gesture.
+                                            // A header drop becomes the top of that section on release.
+                                            val landed = StatusMoves.belowHeader(current.slots, root.id, current.target)
+                                            val moved = current.moved || landed !== current.slots
+                                            val command = if (moved) StatusMoves.drop(landed, current.original, root.id) else null
+                                            // A cancelled gesture (back swipe, notification shade) never writes or opens the menu.
+                                            when (StatusMoves.release(gesture.ended && windowInfo.isWindowFocused, moved, gesture.travelled, slop, command)) {
+                                                StatusMoves.Release.Menu -> { drag = null; menuFor = root.id }
+                                                StatusMoves.Release.Revert -> drag = null
+                                                StatusMoves.Release.Commit -> {
+                                                    val dropped = current.copy(slots = landed, dragging = false, command = command)
+                                                    drag = dropped
+                                                    status.run(command!!) { ok ->
+                                                        if (drag === dropped) drag = if (ok) dropped.copy(written = true) else null
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        dragGestureDetector = gesture,
+                                    ) }, dragging)
+                                }
+                            } else family(null, false)
+                        }
+                    }
                 }
-                items(section.visibleChats(idleExpanded), key = { "${section.id}/${it.id}" }) { chat ->
-                    // Rows fade and slide as their group collapses or expands.
-                    ChatRow(
-                        chat, if (section.header is HomeSection.Header.Project && chat.nestedUnder == null) details - ChatRowDetail.Project else details, now,
-                        owner = owners?.let { it[chat.ownerId] ?: WorkspaceMember(chat.ownerId.orEmpty(), "") },
-                        expanded = if (chat.treeParent) chat.id !in folded else null,
-                        onToggle = { toggleOpener(chat.id) },
-                        archived = archivedList,
-                        onSetArchived = onSetArchived?.let { action -> { action(chat, !archivedList) } },
-                        modifier = Modifier.animateItem(),
-                    ) { onOpenChat(chat) }
-                }
-                if (section.folds) {
-                    item(key = "${section.id}/more") {
-                        MoreRow(
-                            if (idleExpanded) showLess else pluralStringResource(R.plurals.home_group_show_all, section.rootCount, section.rootCount),
-                            onToggleIdle,
-                            Modifier.animateItem(),
-                        )
+            }
+            open?.let(::trailer)
+        }
+    }
+}
+
+/** A drag in flight, or a dropped [command] awaiting the catalog that shows it ([misses] catalogs without it so far). */
+private data class HeldOrder(
+    val slots: List<ListSlot>,
+    val original: List<ListSlot>,
+    val dragging: Boolean,
+    val moved: Boolean = false,
+    val target: String? = null,
+    val command: app.lody.android.runtime.StatusViewCommand.Move? = null,
+    val written: Boolean = false,
+    val misses: Int = 0,
+)
+
+/** Catalogs a written drop may wait through for its own read back before the order is released. */
+private const val HOLD_MISSES = 2
+
+/**
+ * The long-press drag detector, recording how the gesture finished: the drag library reports a
+ * normal release, a cancel and a disposal through the same `onDragStopped`.
+ */
+private class DragGesture : sh.calvin.reorderable.DragGestureDetector {
+    var ended = false
+        private set
+    var travelled = 0f
+        private set
+
+    override suspend fun androidx.compose.ui.input.pointer.PointerInputScope.detect(
+        onDragStart: (androidx.compose.ui.geometry.Offset) -> Unit,
+        onDragEnd: () -> Unit,
+        onDragCancel: () -> Unit,
+        onDrag: (change: androidx.compose.ui.input.pointer.PointerInputChange, dragAmount: androidx.compose.ui.geometry.Offset) -> Unit,
+    ) = detectDragGesturesAfterLongPress(
+        onDragStart = { ended = false; travelled = 0f; onDragStart(it) },
+        onDragEnd = { ended = true; onDragEnd() },
+        onDragCancel = { ended = false; onDragCancel() },
+        onDrag = { change, amount -> travelled += amount.getDistance(); onDrag(change, amount) },
+    )
+}
+
+/**
+ * What the Home list needs for Status view actions: the action host (Later sheet, questions,
+ * Undo), a raw command runner reporting success, and whether section management is offered.
+ */
+internal class StatusListControls(
+    val actions: StatusActions,
+    val run: (app.lody.android.runtime.StatusViewCommand, (Boolean) -> Unit) -> Unit,
+    val manageSections: Boolean,
+    /** New section…; with a row id, that row then moves into it (the row menu's entry). */
+    val onNewSection: (String?) -> Unit,
+    val onRenameSection: (String, String) -> Unit,
+    val onDeleteSection: (String, String) -> Unit,
+    /** A row's action target, its opened sub-conversations counted across tiers. */
+    val target: (ChatItem) -> StatusTarget = { StatusTarget(it.id, it.tier) },
+    /** Every pin section by id and name, the default (null, null) first, even while it is hidden. */
+    val pinSections: List<Pair<String?, String?>> = listOf(null to null),
+)
+
+@Composable
+private fun SectionMenu(section: HomeSection, order: List<String>, controls: StatusListControls, close: () -> Unit) {
+    val header = section.header as HomeSection.Header.Pinned
+    val colors = LodyTheme.colors
+    @Composable fun entry(text: Int, enabled: Boolean = true, onClick: () -> Unit) = DropdownMenuItem(
+        text = { Text(stringResource(text), style = LodyTheme.typography.body, color = if (enabled) colors.textPrimary else colors.textTertiary) },
+        enabled = enabled, onClick = { close(); onClick() },
+    )
+    entry(R.string.status_section_new) { controls.onNewSection(null) }
+    val id = header.sectionId ?: return
+    entry(R.string.status_section_rename) { controls.onRenameSection(id, header.name.orEmpty()) }
+    val up = StatusMoves.section(order, id, -1)
+    val down = StatusMoves.section(order, id, 1)
+    entry(R.string.status_action_move_up, up != null) { up?.let { controls.run(it) {} } }
+    entry(R.string.status_action_move_down, down != null) { down?.let { controls.run(it) {} } }
+    entry(R.string.status_section_delete) { controls.onDeleteSection(id, header.name.orEmpty()) }
+}
+
+/** A root row, its swipe actions and action menu, then its opened children (with their own). */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FamilyRows(
+    section: HomeSection,
+    root: ChatItem,
+    kids: List<ChatItem>,
+    details: Set<ChatRowDetail>,
+    now: Long,
+    owners: Map<String, WorkspaceMember>?,
+    folded: Set<String>,
+    toggleOpener: (String) -> Unit,
+    archivedList: Boolean,
+    onSetArchived: ((ChatItem, Boolean) -> Unit)?,
+    status: StatusListControls?,
+    sections: List<HomeSection>,
+    menuOpen: Boolean,
+    onMenu: (Boolean) -> Unit,
+    press: (() -> Modifier)?,
+    dragging: Boolean,
+    onOpenChat: (ChatItem) -> Unit,
+) {
+    val rowDetails = { chat: ChatItem -> if (section.header is HomeSection.Header.Project && chat.nestedUnder == null) details - ChatRowDetail.Project else details }
+    val owner = { chat: ChatItem -> owners?.let { it[chat.ownerId] ?: WorkspaceMember(chat.ownerId.orEmpty(), "") } }
+    val labels = RowLabels.current()
+    val move = { command: app.lody.android.runtime.StatusViewCommand? -> command?.let { status?.run?.invoke(it) {} }; Unit }
+    val rootActions = rowActions(root, section, sections, status, onSetArchived, archivedList, labels)
+    val up = status?.let { StatusMoves.by(section, root, -1) }
+    val down = status?.let { StatusMoves.by(section, root, 1) }
+    val expanded = root.treeParent && root.id !in folded
+    val collapseLabel = stringResource(R.string.home_tree_collapse)
+    val semantics = buildList {
+        if (expanded) add(CustomAccessibilityAction(collapseLabel) { toggleOpener(root.id); true })
+        if (up != null) add(CustomAccessibilityAction(labels.moveUp) { move(up); true })
+        if (down != null) add(CustomAccessibilityAction(labels.moveDown) { move(down); true })
+        if (rootActions.hasMenu) add(CustomAccessibilityAction(labels.actions) { onMenu(true); true })
+    }
+    Column(Modifier.graphicsLayer { if (dragging) { shadowElevation = 12f; alpha = 0.96f } }.background(if (dragging) LodyTheme.colors.bgRaised else Color.Transparent)) {
+        // Keep the active long-press handle composed when a drag starts.
+        SwipeActions(rootActions.leading, rootActions.trailing) {
+            ChatRow(
+                root, rowDetails(root), now, owner(root),
+                expanded = if (root.treeParent) root.id !in folded else null,
+                onToggle = { toggleOpener(root.id) },
+                menuOpen = menuOpen,
+                onMenu = if (rootActions.hasMenu) onMenu else null,
+                press = press,
+                actions = semantics,
+                menu = { close -> RowMenu(section, root, rootActions, sections, status, archivedList, close) },
+            ) { onOpenChat(root) }
+        }
+        // Opened children move with their opener (no drag or Move up / down) but take every other action.
+        // Expanded, the count line gives way to them and the first child carries the collapse chevron.
+        AnimatedVisibility(expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Column {
+                kids.forEachIndexed { index, kid ->
+                    var kidMenu by remember { mutableStateOf(false) }
+                    val kidActions = rowActions(kid, section, sections, status, onSetArchived, archivedList, labels)
+                    val collapse: (() -> Unit)? = if (index == 0) { { toggleOpener(root.id) } } else null
+                    val kidSemantics = buildList {
+                        if (collapse != null) add(CustomAccessibilityAction(collapseLabel) { collapse(); true })
+                        if (kidActions.hasMenu) add(CustomAccessibilityAction(labels.actions) { kidMenu = true; true })
+                    }
+                    SwipeActions(kidActions.leading.takeIf { !dragging }, kidActions.trailing.takeIf { !dragging }.orEmpty()) {
+                        ChatRow(
+                            kid, rowDetails(kid), now, owner(kid), collapseFamily = collapse,
+                            menuOpen = kidMenu, onMenu = if (kidActions.hasMenu) { open: Boolean -> kidMenu = open } else null,
+                            actions = kidSemantics,
+                            menu = { close -> RowMenu(section, kid, kidActions, sections, status, archivedList, close) },
+                        ) { onOpenChat(kid) }
                     }
                 }
             }
@@ -928,25 +1287,200 @@ internal fun HomeList(
     }
 }
 
+/** What one row offers: status actions, pin, archive, and the swipes revealing them. */
+private class RowActions(
+    val target: StatusTarget,
+    /** Later and the tier-dependent Settle / Move to Focus. */
+    val status: Boolean,
+    val settle: Boolean,
+    val focus: Boolean,
+    val pin: (() -> Unit)?,
+    val archive: (() -> Unit)?,
+    val leading: SwipeAction?,
+    val trailing: List<SwipeAction>,
+) {
+    val hasMenu get() = status || pin != null || archive != null
+}
+
+@Composable
+private fun rowActions(
+    chat: ChatItem,
+    section: HomeSection,
+    sections: List<HomeSection>,
+    controls: StatusListControls?,
+    onSetArchived: ((ChatItem, Boolean) -> Unit)?,
+    archivedList: Boolean,
+    labels: RowLabels,
+): RowActions {
+    val archive = onSetArchived?.let { action -> { action(chat, !archivedList) } }
+    val actions = controls?.actions
+    val tier = chat.tier
+    // A row the layout carries under a pinned opener is not pinned itself: its own snooze / settle
+    // metadata decides Settle and Move to Focus there.
+    val carried = tier == app.lody.android.runtime.StatusTier.Pinned && !chat.pinned
+    val status = actions != null && chat.canManage && tier != null && (tier != app.lody.android.runtime.StatusTier.Pinned || carried)
+    val settled = if (carried) chat.ownSettled else tier == app.lody.android.runtime.StatusTier.Settled
+    val later = if (carried) chat.ownSnoozedUntil != null else tier == app.lody.android.runtime.StatusTier.Later
+    val target = controls?.target?.invoke(chat) ?: StatusTarget(chat.id, tier)
+    val pin = controls?.takeIf { chat.canPrefer }?.let { c -> { c.run(app.lody.android.runtime.StatusViewCommand.SetPinned(chat.id, !chat.pinned)) {} } }
+    val trailing = buildList {
+        if (status && !settled) {
+            add(SwipeAction(labels.settle, LodyIcons.Check) { actions!!.settle(target) })
+            add(SwipeAction(labels.later, LodyIcons.Clock) { actions!!.later(target) })
+        } else if (archive != null && controls != null && settled) add(SwipeAction(labels.archive, LodyIcons.Inbox, danger = true, onClick = archive))
+    }
+    val leading = pin?.let { SwipeAction(if (chat.pinned) labels.unpin else labels.pin, LodyIcons.Pin, onClick = it) }
+    return RowActions(target, status, settle = status && !settled, focus = status && (settled || later), pin, archive, leading, trailing)
+}
+
+@Composable
+private fun RowMenu(
+    section: HomeSection,
+    chat: ChatItem,
+    row: RowActions,
+    sections: List<HomeSection>,
+    status: StatusListControls?,
+    archivedList: Boolean,
+    close: () -> Unit,
+) {
+    val colors = LodyTheme.colors
+    @Composable fun entry(text: String, icon: ImageVector?, onClick: () -> Unit) = DropdownMenuItem(
+        text = { Text(text, style = LodyTheme.typography.body, color = colors.textPrimary) },
+        leadingIcon = icon?.let { { Glyph(it, colors.iconSecondary, LodyIconSize.sm) } },
+        onClick = { close(); onClick() },
+    )
+    var sectionsOpen by remember { mutableStateOf(false) }
+    val actions = status?.actions
+    if (row.status && actions != null) {
+        // Later stays on Later rows too: it re-sets the wake-up time.
+        entry(stringResource(R.string.status_later), LodyIcons.Clock) { actions.later(row.target) }
+        if (row.focus) entry(stringResource(R.string.status_action_focus), LodyIcons.Undo) { actions.focus(row.target) }
+        if (row.settle) entry(stringResource(R.string.status_action_settle), LodyIcons.Check) { actions.settle(row.target) }
+    }
+    row.pin?.let { entry(stringResource(if (chat.pinned) R.string.status_action_unpin else R.string.status_action_pin), LodyIcons.Pin, it) }
+    // Move to section lists every pin section (the default "Pinned" included) and New section…
+    if (status != null && chat.canPrefer) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.status_action_move_section), style = LodyTheme.typography.body, color = colors.textPrimary) },
+            trailingIcon = { Glyph(LodyIcons.Forward, colors.iconTertiary, LodyIconSize.sm) },
+            onClick = { sectionsOpen = !sectionsOpen },
+        )
+        if (sectionsOpen) {
+            val current = (section.header as? HomeSection.Header.Pinned)?.sectionId.takeIf { chat.pinned && section.header is HomeSection.Header.Pinned }
+            status.pinSections.filter { (sectionId, _) -> !(chat.pinned && sectionId == current) }.forEach { (sectionId, name) ->
+                entry("  " + (name ?: stringResource(R.string.home_group_pinned)), null) {
+                    StatusMoves.toSection(sections, chat, sectionId)?.let { status.run(it) {} }
+                }
+            }
+            if (status.manageSections) entry("  " + stringResource(R.string.status_section_new), LodyIcons.Plus) { status.onNewSection(chat.id) }
+        }
+    }
+    StatusMoves.toTop(section, chat)?.takeIf { status != null && chat.nestedUnder == null }?.let { command -> entry(stringResource(R.string.status_action_move_top), null) { status!!.run(command) {} } }
+    row.archive?.let { archive -> ArchiveItem(archivedList) { close(); archive() } }
+}
+
+@Composable
+private fun ArchiveItem(archived: Boolean, onClick: () -> Unit) {
+    val colors = LodyTheme.colors
+    DropdownMenuItem(
+        text = { Text(stringResource(if (archived) R.string.home_unarchive else R.string.home_archive), style = LodyTheme.typography.body, color = colors.textPrimary) },
+        leadingIcon = { Glyph(LodyIcons.Inbox, colors.iconSecondary, LodyIconSize.sm) },
+        onClick = onClick,
+    )
+}
+
+/** Localized row action labels, resolved once per row. */
+private data class RowLabels(
+    val later: String, val settle: String, val pin: String, val unpin: String, val archive: String,
+    val moveUp: String, val moveDown: String, val actions: String,
+) {
+    companion object {
+        @Composable fun current() = RowLabels(
+            stringResource(R.string.status_later), stringResource(R.string.status_action_settle),
+            stringResource(R.string.status_action_pin), stringResource(R.string.status_action_unpin),
+            stringResource(R.string.home_archive), stringResource(R.string.status_action_move_up),
+            stringResource(R.string.status_action_move_down), stringResource(R.string.bar_more),
+        )
+    }
+}
+
+private class SwipeAction(val label: String, val icon: ImageVector, val danger: Boolean = false, val onClick: () -> Unit)
+
+/**
+ * Swipe to reveal row actions, then tap one (no full-swipe commit), as the Tab panel's Close. The
+ * same actions stay in the long-press menu and TalkBack's actions.
+ */
+@Composable
+private fun SwipeActions(leading: SwipeAction?, trailing: List<SwipeAction>, content: @Composable () -> Unit) {
+    if (leading == null && trailing.isEmpty()) { content(); return }
+    val slot = LodySize.listRow + LodySpacing.lg
+    val slotPx = with(LocalDensity.current) { slot.toPx() }
+    val startMax = if (leading != null) slotPx else 0f
+    val endMax = trailing.size * slotPx
+    var reveal by remember { mutableFloatStateOf(0f) }
+    var drag by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    val rtl = LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
+    val offset by animateFloatAsState(if (dragging) drag else reveal, tween(if (dragging) 0 else 160), label = "rowSwipe")
+    val colors = LodyTheme.colors
+    Box(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clipToBounds()) {
+        if (leading != null && offset > 1f) Row(Modifier.align(Alignment.CenterStart).fillMaxHeight()) { SwipeButton(leading, slot) { reveal = 0f; leading.onClick() } }
+        if (trailing.isNotEmpty() && offset < -1f) Row(Modifier.align(Alignment.CenterEnd).fillMaxHeight()) {
+            trailing.forEach { action -> SwipeButton(action, slot) { reveal = 0f; action.onClick() } }
+        }
+        Box(Modifier.fillMaxWidth().offset { IntOffset((if (rtl) -offset else offset).roundToInt(), 0) }.background(homePageColor())
+            .pointerInput(startMax, endMax) {
+                detectHorizontalDragGestures(
+                    onDragStart = { drag = reveal; dragging = true },
+                    onDragEnd = {
+                        reveal = when {
+                            drag > startMax / 2 && startMax > 0 -> startMax
+                            drag < -endMax / 2 && endMax > 0 -> -endMax
+                            else -> 0f
+                        }
+                        dragging = false
+                    },
+                    onDragCancel = { dragging = false },
+                    onHorizontalDrag = { change, amount -> change.consume(); drag = (drag + if (rtl) -amount else amount).coerceIn(-endMax, startMax) },
+                )
+            }) {
+            content()
+            // While revealed, a tap on the row only closes the actions.
+            if (reveal != 0f) Box(Modifier.matchParentSize().clickable(interactionSource = null, indication = null) { reveal = 0f })
+        }
+    }
+}
+
+@Composable
+private fun SwipeButton(action: SwipeAction, width: Dp, onClick: () -> Unit) {
+    val colors = LodyTheme.colors
+    Column(
+        Modifier.width(width).fillMaxHeight().background(if (action.danger) colors.dangerDefault else colors.bgSunken).clickable(role = Role.Button, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+    ) {
+        val tint = if (action.danger) Color.White else colors.textPrimary
+        Glyph(action.icon, tint, LodyIconSize.sm)
+        Text(action.label, style = LodyTheme.typography.footnote, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
 @Composable
 private fun HomeSection.Header.title(): String = when (this) {
     is HomeSection.Header.Bucket -> stringResource(bucket.label)
     is HomeSection.Header.Project -> name
-    HomeSection.Header.Pinned -> stringResource(R.string.home_group_pinned)
+    is HomeSection.Header.Pinned -> name ?: stringResource(R.string.home_group_pinned)
     HomeSection.Header.Chats -> stringResource(R.string.home_group_chats)
-    is HomeSection.Header.Status -> stringResource(
-        when (group) {
-            StatusGroup.Attention -> R.string.home_group_attention
-            StatusGroup.Finished -> R.string.home_group_finished
-            StatusGroup.Running -> R.string.home_group_running
-            StatusGroup.PullRequest -> R.string.home_group_pull_request
-            StatusGroup.Idle -> R.string.home_group_idle
+    is HomeSection.Header.Tier -> stringResource(
+        when (tier) {
+            app.lody.android.runtime.StatusTier.Later -> R.string.status_later
+            app.lody.android.runtime.StatusTier.Settled -> R.string.status_settled
+            else -> R.string.status_focus
         },
     )
 }
 
 @Composable
-private fun MoreRow(title: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun MoreRow(title: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     Text(
         title,
         style = LodyTheme.typography.body,
@@ -954,7 +1488,7 @@ private fun MoreRow(title: String, onClick: () -> Unit, modifier: Modifier = Mod
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = LodySize.listRow)
-            .clickable(role = Role.Button, onClick = onClick)
+            .then(if (enabled) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
             .padding(start = LodyLayout.childIndent, end = LodyLayout.screenPaddingX)
             .wrapContentHeight(Alignment.CenterVertically),
     )
@@ -1118,28 +1652,54 @@ private val ProjectSource.label: Int
 // MARK: - Rows
 
 @Composable
-private fun SectionTitle(text: String, repository: String? = null, collapsed: Boolean? = null, onToggle: () -> Unit = {}) {
+private fun SectionTitle(
+    text: String,
+    repository: String? = null,
+    collapsed: Boolean? = null,
+    onToggle: () -> Unit = {},
+    /** Status tiers (and collapsed pin sections) name how many conversations they hold. */
+    count: Int? = null,
+    /** A pin section's header menu (New section, Rename, Move up / down, Delete). */
+    menu: (@Composable (close: () -> Unit) -> Unit)? = null,
+) {
     // `collapsed` is null where the group cannot fold (search). The chevron points down while open.
     val angle by animateFloatAsState(if (collapsed == true) 0f else 90f, LodySpring.snappy(), label = "group")
     val action = stringResource(if (collapsed == true) R.string.home_group_expand else R.string.home_group_collapse)
     val state = stringResource(if (collapsed == true) R.string.home_tree_collapsed else R.string.home_tree_expanded)
+    val counted = count?.let { pluralStringResource(R.plurals.status_tier_count, it, it) }
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
             .background(homePageColor())
-            .then(if (collapsed != null) Modifier.clickable(role = Role.Button, onClickLabel = action, onClick = onToggle) else Modifier)
-            .semantics(mergeDescendants = true) {
-                heading()
-                if (collapsed != null) stateDescription = state
-            }
-            .padding(start = LodyLayout.screenPaddingX, end = LodyLayout.screenPaddingX, top = LodySpacing.lg, bottom = LodySpacing.xs),
-        horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
+            .padding(end = if (menu != null) LodySpacing.xs else LodyLayout.screenPaddingX),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // The project's logo in its original colours, unlike the muted row marks.
-        if (!repository.isNullOrBlank()) RepositoryIcon(repository, muted = false)
-        Text(text, style = LodyTheme.typography.subhead, color = LodyTheme.colors.textSecondary)
-        if (collapsed != null) Glyph(LodyIcons.Forward, LodyTheme.colors.textSecondary, FamilyChevron, Modifier.rotate(angle))
+        Row(
+            Modifier
+                .weight(1f)
+                .then(if (collapsed != null) Modifier.clickable(role = Role.Button, onClickLabel = action, onClick = onToggle) else Modifier)
+                .semantics(mergeDescendants = true) {
+                    heading()
+                    if (collapsed != null) stateDescription = state
+                    if (counted != null) contentDescription = "$text, $counted"
+                }
+                .padding(start = LodyLayout.screenPaddingX, top = LodySpacing.lg, bottom = LodySpacing.xs),
+            horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The project's logo in its original colours, unlike the muted row marks.
+            if (!repository.isNullOrBlank()) RepositoryIcon(repository, muted = false)
+            Text(text, style = LodyTheme.typography.subhead, color = LodyTheme.colors.textSecondary)
+            if (count != null) Text(count.toString(), style = LodyTheme.typography.footnote.copy(fontFeatureSettings = "tnum"), color = LodyTheme.colors.textTertiary)
+            if (collapsed != null) Glyph(LodyIcons.Forward, LodyTheme.colors.textSecondary, FamilyChevron, Modifier.rotate(angle))
+        }
+        if (menu != null) Box(Modifier.padding(top = LodySpacing.sm)) {
+            IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(LodySize.controlMd)) {
+                Icon(LodyIcons.More, stringResource(R.string.status_section_actions), tint = LodyTheme.colors.iconSecondary, modifier = Modifier.size(LodyIconSize.sm))
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = LodyTheme.colors.bgOverlay) { menu { menuOpen = false } }
+        }
     }
 }
 
@@ -1147,8 +1707,10 @@ private fun SectionTitle(text: String, repository: String? = null, collapsed: Bo
  * Line 1: status slot, title, age. Line 2 (only when an enabled detail has a value): repo or folder
  * mark + project, branch, and the PR mark trailing. iOS counterpart: `ChatRowContent`.
  *
- * [expanded] is set on a row with nested chats: whether they are shown. A "⌄ 4 opened chats" line
- * below the row heads the family. Nested rows read one size down and have rounded branches.
+ * [expanded] is set on a row with nested chats: whether they are shown. While folded, a "› 4 opened
+ * chats" line below the row stands for the family; expanded, it gives way to the children and
+ * [collapseFamily] (the first child's leading chevron) folds them again. Nested rows read one size
+ * down and have rounded branches.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1159,15 +1721,19 @@ private fun ChatRow(
     owner: WorkspaceMember? = null,
     expanded: Boolean? = null,
     onToggle: () -> Unit = {},
-    /** Whether the row is in the archived list: its long-press action is then Unarchive. */
-    archived: Boolean = false,
-    onSetArchived: (() -> Unit)? = null,
+    collapseFamily: (() -> Unit)? = null,
+    /** The long-press action menu: open state, its toggle (null: no menu) and its items. */
+    menuOpen: Boolean = false,
+    onMenu: ((Boolean) -> Unit)? = null,
+    menu: @Composable (close: () -> Unit) -> Unit = {},
+    /** A drag handle that replaces the plain long press (a long press without a move opens the menu). */
+    press: (() -> Modifier)? = null,
+    actions: List<CustomAccessibilityAction> = emptyList(),
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
-    var menu by remember { mutableStateOf(false) }
     val place = chat.place.takeIf { ChatRowDetail.Project in details && it.isNotEmpty() }
     val branch = chat.branch.takeIf { ChatRowDetail.Branch in details && it.isNotEmpty() }
     val pr = chat.prStatus.takeIf { ChatRowDetail.PullRequest in details && it in PrStatuses }
@@ -1176,83 +1742,124 @@ private fun ChatRow(
     val nested = chat.nestedUnder != null
     val rail = colors.borderDefault
     var titleHeight by remember { mutableFloatStateOf(0f) }
+    val first = collapseFamily != null
     Column(
         modifier
             .fillMaxWidth()
-            .drawBehind { if (nested) drawRail(rail, chat.lastChild, if (twoLine) LodySpacing.sm.toPx() + titleHeight / 2 else size.height / 2) },
+            // A little air between an expanded family and the next conversation; children stay tight.
+            .padding(bottom = if (nested && chat.lastChild) LodySpacing.sm else 0.dp)
+            .drawBehind {
+                if (nested) {
+                    val turn = if (twoLine) LodySpacing.sm.toPx() + titleHeight / 2 else size.height / 2
+                    if (first) drawTrunkBelowChevron(rail, chat.lastChild, turn) else drawRail(rail, chat.lastChild, turn)
+                }
+            },
     ) {
         // A popup: it takes no space in the column and anchors to this row.
-        if (onSetArchived != null) DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = colors.bgOverlay) {
-            DropdownMenuItem(
-                text = { Text(stringResource(if (archived) R.string.home_unarchive else R.string.home_archive), style = LodyTheme.typography.body, color = colors.textPrimary) },
-                leadingIcon = { Glyph(LodyIcons.Inbox, colors.iconSecondary, LodyIconSize.sm) },
-                onClick = { menu = false; onSetArchived() },
-            )
+        if (onMenu != null) DropdownMenu(expanded = menuOpen, onDismissRequest = { onMenu(false) }, containerColor = colors.bgOverlay) {
+            menu { onMenu(false) }
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = if (nested) LodySize.controlMd else LodySize.listRow)
-                .combinedClickable(onClick = onClick, onLongClick = onSetArchived?.let { { menu = true } })
-                .padding(horizontal = LodyLayout.screenPaddingX)
-                .padding(vertical = if (twoLine) LodySpacing.sm else 0.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (nested) Spacer(Modifier.width(TreeLevel))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LodySpacing.xxs)) {
-                Row(Modifier.onSizeChanged { titleHeight = it.height.toFloat() }, verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        chat.title,
-                        style = when {
-                            nested -> type.callout.copy(fontWeight = if (chat.unread) type.bodyEmphasis.fontWeight else type.callout.fontWeight)
-                            chat.unread -> type.bodyEmphasis
-                            else -> type.body
-                        },
-                        // Archived chats read in tertiary ink on the grey page (iOS #2541).
-                        color = if (LocalArchivedPage.current) colors.textTertiary else colors.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (chat.attention != null) {
-                        Box(Modifier.padding(start = LodySpacing.sm).size(LodyIconSize.md), contentAlignment = Alignment.Center) { AttentionGlyph(chat.attention) }
-                    }
-                    if (chat.attention == null && pr != null && !twoLine) PullRequestMark(pr, chat.prCi, Modifier.padding(start = LodySpacing.sm))
-                    if (chat.attention == null) chat.activityAt?.let { at ->
+        Box(if (first) Modifier.height(IntrinsicSize.Min) else Modifier) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = if (nested) LodySize.controlMd else LodySize.listRow)
+                    .then(press?.let { handle -> Modifier.clickable(onClick = onClick).then(handle()) }
+                        ?: Modifier.combinedClickable(onClick = onClick, onLongClick = onMenu?.let { { it(true) } }))
+                    .then(if (actions.isNotEmpty()) Modifier.semantics { customActions = actions } else Modifier)
+                    .padding(horizontal = LodyLayout.screenPaddingX)
+                    .padding(vertical = if (twoLine) LodySpacing.sm else 0.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (nested) Spacer(Modifier.width(TreeLevel))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LodySpacing.xxs)) {
+                    Row(Modifier.onSizeChanged { titleHeight = it.height.toFloat() }, verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            ageText(at, now),
-                            style = type.footnote.copy(fontFeatureSettings = "tnum"),
-                            color = colors.textTertiary,
+                            chat.title,
+                            style = when {
+                                nested -> type.callout.copy(fontWeight = if (chat.unread) type.bodyEmphasis.fontWeight else type.callout.fontWeight)
+                                chat.unread -> type.bodyEmphasis
+                                else -> type.body
+                            },
+                            // Archived chats read in tertiary ink on the grey page (iOS #2541).
+                            color = if (LocalArchivedPage.current) colors.textTertiary else colors.textPrimary,
                             maxLines = 1,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.padding(start = if (pr != null && !twoLine) LodySpacing.xs else LodySpacing.sm),
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
-                    }
-                    if (owner != null) {
-                        Spacer(Modifier.width(LodySpacing.sm))
-                        Avatar(owner.image, owner.name.ifBlank { "?" }, LodyIconSize.md)
-                    }
-                }
-                if (twoLine) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Project and branch share the leading space so the PR mark stays pinned trailing.
-                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs)) {
-                            if (place != null) {
-                                if (chat.placeIsRepo) RepositoryIcon(chat.repository)
-                                else Glyph(LodyIcons.Folder, colors.iconSecondary, LodyIconSize.sm)
-                                Text(place, style = type.footnote, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                            }
-                            if (branch != null) {
-                                Glyph(LodyIcons.Branch, colors.iconTertiary, LodyIconSize.sm, Modifier.padding(start = if (place != null) LodySpacing.xs else 0.dp))
-                                Text(branch, style = type.footnote, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = Modifier.weight(1f, fill = false))
+                        if (chat.attention != null) {
+                            Box(Modifier.padding(start = LodySpacing.sm).size(LodyIconSize.md), contentAlignment = Alignment.Center) { AttentionGlyph(chat.attention) }
+                        }
+                        if (chat.attention == null && pr != null && !twoLine) PullRequestMark(pr, chat.prCi, Modifier.padding(start = LodySpacing.sm))
+                        val wakes = chat.snoozedUntil?.takeIf { chat.tier == app.lody.android.runtime.StatusTier.Later && it > now }
+                        if (wakes != null) {
+                            // A Later row's wake-up countdown parks at the trailing edge in neutral ink, after
+                            // any status mark (an unread or waiting Later row still shows when it returns).
+                            val left = countdownText(wakes, now)
+                            val described = stringResource(R.string.status_returns_in, left)
+                            Row(Modifier.padding(start = LodySpacing.sm).semantics(mergeDescendants = true) { contentDescription = described },
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.xxs)) {
+                                Glyph(LodyIcons.Clock, colors.iconTertiary, LodyIconSize.xs)
+                                Text(left, style = type.footnote.copy(fontFeatureSettings = "tnum"), color = colors.textTertiary, maxLines = 1)
                             }
                         }
-                        if (pr != null) PullRequestMark(pr, chat.prCi, Modifier.padding(start = LodySpacing.sm))
+                        if (chat.attention == null && wakes == null) chat.activityAt?.let { at ->
+                            Text(
+                                ageText(at, now),
+                                style = type.footnote.copy(fontFeatureSettings = "tnum"),
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.padding(start = if (pr != null && !twoLine) LodySpacing.xs else LodySpacing.sm),
+                            )
+                        }
+                        if (owner != null) {
+                            Spacer(Modifier.width(LodySpacing.sm))
+                            Avatar(owner.image, owner.name.ifBlank { "?" }, LodyIconSize.md)
+                        }
+                    }
+                    if (twoLine) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Project and branch share the leading space so the PR mark stays pinned trailing.
+                            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs)) {
+                                if (place != null) {
+                                    if (chat.placeIsRepo) RepositoryIcon(chat.repository)
+                                    else Glyph(LodyIcons.Folder, colors.iconSecondary, LodyIconSize.sm)
+                                    Text(place, style = type.footnote, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                }
+                                if (branch != null) {
+                                    Glyph(LodyIcons.Branch, colors.iconTertiary, LodyIconSize.sm, Modifier.padding(start = if (place != null) LodySpacing.xs else 0.dp))
+                                    Text(branch, style = type.footnote, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = Modifier.weight(1f, fill = false))
+                                }
+                            }
+                            if (pr != null) PullRequestMark(pr, chat.prCi, Modifier.padding(start = LodySpacing.sm))
+                        }
                     }
                 }
             }
+            if (collapseFamily != null) {
+                // The first child's leading gutter folds the family; its chevron sits on the trunk, level with the title.
+                val chevronTop = with(LocalDensity.current) { (LodySpacing.sm.toPx() + titleHeight / 2).toDp() } - FamilyChevron / 2
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .width(LodyLayout.childIndent)
+                        .clickable(onClick = collapseFamily)
+                        .clearAndSetSemantics {},
+                    contentAlignment = if (twoLine) Alignment.TopStart else Alignment.CenterStart,
+                ) {
+                    Glyph(
+                        LodyIcons.Forward, colors.iconSecondary, FamilyChevron,
+                        Modifier.padding(start = LodyLayout.screenPaddingX).offset(y = if (twoLine) chevronTop else 0.dp).rotate(90f),
+                    )
+                }
+            }
         }
-        if (expanded != null) FamilyToggle(chat.childCount, expanded, chat.childAttention, onToggle)
+        if (expanded != null) {
+            AnimatedVisibility(!expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                FamilyToggle(chat.childCount, chat.childAttention, onToggle)
+            }
+        }
     }
 }
 
@@ -1284,19 +1891,26 @@ private fun DrawScope.drawRail(color: Color, last: Boolean, turn: Float) {
     drawPath(path, color, style = Stroke(width = RailWidth.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
 }
 
+/** The first child's trunk: it starts below the collapse chevron and continues only when more children follow. */
+private fun DrawScope.drawTrunkBelowChevron(color: Color, last: Boolean, turn: Float) {
+    if (last) return
+    val trunk = RailX.toPx()
+    drawLine(color, Offset(trunk, turn + FamilyChevron.toPx() / 2 + LodySpacing.xs.toPx()), Offset(trunk, size.height),
+        strokeWidth = RailWidth.toPx(), cap = StrokeCap.Round)
+}
+
 /**
- * The family's own line under the opener (Slack's "7 replies"): chevron + "7 opened chats",
- * aligned with the opener's title. Same place folded or open; the chevron turns down when the
- * family shows and the rail starts beneath it. The whole line toggles the family and announces
- * its count and expansion state; the separate opener row opens the conversation.
+ * A folded family's line under the opener (Slack's "7 replies"): chevron + "7 opened chats",
+ * aligned with the opener's title. The whole line expands the family and announces its count and
+ * folded state; the separate opener row opens the conversation. Expanded, the line hides and the
+ * first child's chevron folds the family again.
  */
 @Composable
-private fun FamilyToggle(count: Int, expanded: Boolean, childAttention: ChatAttention?, onToggle: () -> Unit) {
+private fun FamilyToggle(count: Int, childAttention: ChatAttention?, onToggle: () -> Unit) {
     val colors = LodyTheme.colors
-    val action = stringResource(if (expanded) R.string.home_tree_collapse else R.string.home_tree_expand)
+    val action = stringResource(R.string.home_tree_expand)
     val label = pluralStringResource(R.plurals.home_tree_count, count, count)
-    val description = label + ", " + stringResource(if (expanded) R.string.home_tree_expanded else R.string.home_tree_collapsed)
-    val angle by animateFloatAsState(if (expanded) 90f else 0f, LodySpring.snappy(), label = "family")
+    val description = label + ", " + stringResource(R.string.home_tree_collapsed)
     Box(
         Modifier
             .fillMaxWidth()
@@ -1313,7 +1927,7 @@ private fun FamilyToggle(count: Int, expanded: Boolean, childAttention: ChatAtte
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
         ) {
-            Glyph(LodyIcons.Forward, colors.iconSecondary, FamilyChevron, Modifier.rotate(angle))
+            Glyph(LodyIcons.Forward, colors.iconSecondary, FamilyChevron)
             Text(
                 label,
                 style = LodyTheme.typography.footnote.copy(fontFeatureSettings = "tnum"),
@@ -1321,7 +1935,7 @@ private fun FamilyToggle(count: Int, expanded: Boolean, childAttention: ChatAtte
                 maxLines = 1,
             )
         }
-        if (!expanded && childAttention != null) {
+        if (childAttention != null) {
             Box(Modifier.align(Alignment.CenterEnd).padding(end = LodyLayout.screenPaddingX).size(LodyIconSize.md), contentAlignment = Alignment.Center) {
                 AttentionGlyph(childAttention)
             }
@@ -1354,11 +1968,12 @@ private fun PullRequestMark(status: String, ci: String, modifier: Modifier = Mod
 /** Wall clock for row ages, refreshed each minute while the list is on screen. */
 @Composable
 private fun rememberNow(): Long {
-    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    // The server clock the Status view layout was computed on (device clock until a live catalog).
+    var now by remember { mutableStateOf(app.lody.android.runtime.StatusClock.now()) }
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L - now % 60_000L)
-            now = System.currentTimeMillis()
+            now = app.lody.android.runtime.StatusClock.now()
         }
     }
     return now

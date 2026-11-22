@@ -22,6 +22,28 @@ RPC streams. The Android bridge accepts the scoped `historyToken` call and
 returns only the history proof minted by native for that workspace. The mirrored
 reader applies an exact-base delta or recovers from the persisted checkpoint.
 
+The Status view runtime (lody-ios `status-view-runtime`, see PROVENANCE `statusView`)
+vendors the shared Lody layout, planner and golden vectors under
+`src/protocol/lody-shared`; `runtime/test/status-view.test.mjs` runs every vector against
+those copies. `runtime/contract/fixtures.json` `catalogStatusView` is the snapshot's
+synthetic `catalog-status-view.json`, the Kotlin golden catalog; a test keeps them equal.
+Since that refresh the snapshot also presents `message_quote` spans in history and accepts
+`quotes` on sends; Android keeps its own quote adapter in `runtime/src` and strips `quotes`
+before the shared send, so quotes are written once. Android's send hook (`runtime/src/network.mjs`) also does what the shared `sendTurn` handler adds
+around `sendTurn`: `/shortcut:<slug>` tokens expand before references, and a conversation's first
+turn selects the workspace's default MCP servers (`sessionMcpSelection`, with a Streams grant asked
+of native through `contractBridge.requestGrant`); later turns keep their persisted selection. The catalog-budget harness extracts
+`watch` / `publish` from `src/runtime/index.ts`, so it supplies their module constants and
+Status view inputs explicitly.
+
+Every WebView document (`runtime/src/{main,debug,network}.mjs`) first imports the vendored
+`src/runtime/platform-fallbacks.ts` (`AbortSignal.any`, Chrome 116; `URL.canParse`, Chrome 120),
+then Android's own `AbortSignal.timeout` fallback (`runtime/src/abort-signal-timeout.mjs`,
+Chrome 103; iOS needs none). The bundles target Chrome 100. Each fallback installs only where
+the API is missing; the individual fallback modules only export, so a document must import
+`platform-fallbacks.ts`, not them. `runtime/test/network-document.test.mjs` bundles the network
+document with all three deleted, reads through its guarded fetch and checks `URL.canParse`.
+
 The current runtime pins Flock 0.5.0, Streams Client 0.13.1, Streams CRDT
 0.21.1 and Loro 1.17.0, matching the root workspace and iOS decoder.
 Control requests and durable uploads each retain a 15-second budget, with
@@ -249,3 +271,13 @@ The trusted NetworkRuntime permits only the validated grant HTTPS origin and its
 matching WSS origin. The offline runtime keeps `connect-src none`. The mirrored
 iOS DataRuntime template permits `https:` and `wss:` while retaining its other CSP
 directives. This permission does not enable the Streams WebSocket transport.
+
+The snapshot at `9f9483cc` ([lody-ios#123](https://github.com/LodyAI/lody-ios/pull/123)) sends
+`readFile`, `fileDiff` and `turnDiff` for a path under a Project group member used in place
+(`additional` / `link`) with that member's `rootId` and a member-relative path, as web
+`toSessionFileRequestPath` does, so such conversation links no longer read the main root and
+report the file outside the project.
+
+The snapshot at `84e41933` ([lody-ios#124](https://github.com/LodyAI/lody-ios/pull/124)) carries a tool call's `activityKind` (`context_compaction` /
+`codex_retry`, web `isProcessStatusToolCall`) in its transcript summary, so the conversation
+shows context compaction as its own status row instead of an ordinary tool step.
