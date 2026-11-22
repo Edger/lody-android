@@ -15,7 +15,31 @@ object LineDiff {
     /** A run of shown lines; [skippedBefore] unchanged lines were folded away above it. */
     data class Hunk(val lines: List<Line>, val skippedBefore: Int)
 
+    /** One split-view row: old and new sides, either may be empty. A context line is both sides. */
+    data class Pair(val left: Line?, val right: Line?)
+
     data class Result(val hunks: List<Hunk>, val skippedAfter: Int, val tooLarge: Boolean = false)
+
+    /** Split-view rows for one hunk: removals and additions pair up by position, context pairs itself. */
+    fun pairs(lines: List<Line>): List<Pair> {
+        val out = ArrayList<Pair>(lines.size)
+        val removed = ArrayList<Line>()
+        val added = ArrayList<Line>()
+        fun flush() {
+            for (index in 0 until maxOf(removed.size, added.size)) {
+                out += Pair(removed.getOrNull(index), added.getOrNull(index))
+            }
+            removed.clear()
+            added.clear()
+        }
+        for (line in lines) when (line.kind) {
+            Kind.Removed -> { if (added.isNotEmpty()) flush(); removed += line }
+            Kind.Added -> added += line
+            Kind.Context -> { flush(); out += Pair(line, line) }
+        }
+        flush()
+        return out
+    }
 
     fun compute(old: String, new: String, context: Int = 3, limit: Long = 4_000_000): Result {
         val a = lines(old)

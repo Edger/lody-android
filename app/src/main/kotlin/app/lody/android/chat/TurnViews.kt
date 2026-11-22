@@ -2,6 +2,7 @@ package app.lody.android.chat
 
 import app.lody.android.designsystem.LodyIconButton as IconButton
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -9,36 +10,87 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.ScrollableState
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import app.lody.android.runtime.StepBlock
 import app.lody.android.runtime.StepDetail
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.material3.SegmentedButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -49,13 +101,18 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.lody.android.R
 import app.lody.android.designsystem.LodyIconSize
 import app.lody.android.designsystem.LodyIcons
+import app.lody.android.designsystem.LodySize
 import app.lody.android.designsystem.LodySpacing
 import app.lody.android.designsystem.LodyTheme
 import app.lody.android.runtime.TurnItem
+import kotlin.math.roundToInt
 
 /**
  * Lazy rows for [blocks] of one agent turn, web-style: prose renders as Markdown blocks;
@@ -605,6 +662,17 @@ private fun FilesRow(files: List<app.lody.android.runtime.FileChange>, modifier:
 }
 
 /**
+ * Near full height. A landscape phone has little vertical room, so the sheet leaves a visible
+ * gap below the status bar instead of starting level with it.
+ */
+@Composable
+private fun sheetHeightFraction(): Float {
+    val size = LocalWindowInfo.current.containerDpSize
+    val landscapePhone = size.height < 600.dp && size.width > size.height
+    return if (landscapePhone) 0.86f else 0.92f
+}
+
+/**
  * A turn's changed files in a near full-screen native sheet, the same shape as [TasksSheet]: the
  * title and totals, then the files as one card of ruled rows (name in code type, folder, +/−); a
  * row slides to that file's [DiffPage] inside the sheet and the back arrow or system Back slides
@@ -623,7 +691,16 @@ internal fun FilesSheet(
     val sheet = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var shown by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf<String?>(null) }
     androidx.activity.compose.BackHandler(enabled = shown != null) { shown = null }
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, containerColor = colors.bgBase) {
+    // A near full-screen sheet: the 640 dp default would leave side margins in landscape. The
+    // safe-drawing insets also keep the header clear of a landscape cutout or status bar.
+    val sheetMaxWidth = Dp.Infinity
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheet,
+        containerColor = colors.bgBase,
+        sheetMaxWidth = sheetMaxWidth,
+        contentWindowInsets = { WindowInsets.safeDrawing },
+    ) {
         androidx.compose.animation.AnimatedContent(
             targetState = shown,
             transitionSpec = {
@@ -639,7 +716,7 @@ internal fun FilesSheet(
                 return@AnimatedContent
             }
             androidx.compose.foundation.lazy.LazyColumn(
-                Modifier.fillMaxWidth().fillMaxHeight(0.92f),
+                Modifier.fillMaxWidth().fillMaxHeight(sheetHeightFraction()),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = LodySpacing.xl),
             ) {
                 item(key = "title") {
@@ -687,9 +764,11 @@ internal fun FilesSheet(
 }
 
 /**
- * One file's diff for the turn: hunks of changed lines with three lines of context, old / new
- * line numbers in the gutter, removed and added lines on their diff tints, folded unchanged runs
- * as "⋯ N unchanged lines", selectable text. The diff is computed off the main thread.
+ * One file's diff for the turn, shaped like iOS `FileDiffController`: the file header with the
+ * More menu, hunks of changed lines with three lines of context, and a floating Unified / Split
+ * and wrap / source-width switch. Old / new line numbers sit in the gutter, removed and added
+ * lines on their diff tints, folded unchanged runs read "⋯ N unchanged lines", and text stays
+ * selectable. The diff is computed off the main thread; layout choices persist like iOS.
  */
 @Composable
 private fun DiffPage(
@@ -698,84 +777,401 @@ private fun DiffPage(
     loadDiff: suspend (entryId: String, path: String) -> app.lody.android.runtime.FileDiff,
     onBack: () -> Unit,
 ) {
+    val context = LocalContext.current
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
     val code = type.footnote.copy(fontFamily = type.code.fontFamily)
-    var state by androidx.compose.runtime.remember(file.path) { androidx.compose.runtime.mutableStateOf<DiffState>(DiffState.Loading) }
-    androidx.compose.runtime.LaunchedEffect(file.path) {
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var state by remember(file.path) { mutableStateOf<DiffState>(DiffState.Loading) }
+    var style by remember { mutableStateOf(DiffPreferences.style(context)) }
+    var wrap by remember { mutableStateOf(DiffPreferences.wrap(context)) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var previewing by rememberSaveable(file.path) { mutableStateOf(false) }
+    LaunchedEffect(file.path) {
         state = try {
             val diff = loadDiff(entryId, file.path)
             val before = diff.oldText
             val after = diff.newText
             when {
                 diff.unavailable != null -> DiffState.Unavailable
+                diff.tooLarge -> DiffState.TooLarge
                 before == null || after == null -> DiffState.Binary
                 else -> {
-                    val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { LineDiff.compute(before, after) }
-                    if (result.tooLarge) DiffState.TooLarge else DiffState.Ready(result)
+                    val result = withContext(Dispatchers.Default) { LineDiff.compute(before, after) }
+                    if (result.tooLarge) DiffState.TooLarge else DiffState.Ready(diff, result)
                 }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (_: Exception) { DiffState.Unavailable }
     }
-    androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+    BackHandler(enabled = previewing) { previewing = false }
+    val ready = state as? DiffState.Ready
+    val previewText = ready?.diff?.newText
+    if (previewing && previewText != null) {
+        FilePreviewPage(file.path, previewText) { previewing = false }
+        return
+    }
+    fun copy(value: String) {
+        if (clipboardTextTooLarge(value)) {
+            android.widget.Toast.makeText(context, R.string.chat_diff_copy_too_large, android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        clipboard.setText(AnnotatedString(value))
+        android.widget.Toast.makeText(context, R.string.chat_diff_copied, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    Column(Modifier.fillMaxWidth().fillMaxHeight(sheetHeightFraction())) {
         Row(Modifier.padding(end = TranscriptMargin), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) {
                 Icon(LodyIcons.Back, contentDescription = stringResource(R.string.chat_files_back), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
             }
-            androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
-                Text(file.path.substringAfterLast('/'), style = type.headline.copy(fontFamily = type.code.fontFamily), color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
-                val folder = file.path.substringBeforeLast('/', "")
-                if (folder.isNotEmpty()) Text(folder, style = type.caption, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.StartEllipsis)
-            }
-            val digits = type.subhead.copy(fontFeatureSettings = "tnum")
-            Text("+${file.added}", style = digits, color = colors.diffAddedText, modifier = Modifier.padding(end = LodySpacing.xs))
-            Text("−${file.removed}", style = digits, color = colors.diffRemovedText)
-        }
-        androidx.compose.animation.Crossfade(state, label = "diff-state", modifier = Modifier.weight(1f)) { current ->
-            when (current) {
-                DiffState.Loading -> androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().padding(LodySpacing.xl), contentAlignment = Alignment.Center) {
-                    app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.md), color = colors.iconTertiary)
-                }
-                DiffState.Unavailable, DiffState.Binary, DiffState.TooLarge -> Text(
-                    stringResource(
-                        when (current) {
-                            DiffState.Binary -> R.string.chat_diff_binary
-                            DiffState.TooLarge -> R.string.chat_diff_too_large
-                            else -> R.string.chat_diff_unavailable
-                        },
-                    ),
-                    style = type.subhead, color = colors.textSecondary,
-                    modifier = Modifier.padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
-                )
-                is DiffState.Ready -> androidx.compose.foundation.text.selection.SelectionContainer {
-                    androidx.compose.foundation.lazy.LazyColumn(
-                        Modifier.fillMaxWidth(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = LodySpacing.xl),
-                    ) {
-                        current.result.hunks.forEachIndexed { hunkIndex, hunk ->
-                            if (hunk.skippedBefore > 0) item(key = "skip:$hunkIndex") { FoldedLines(hunk.skippedBefore) }
-                            hunk.lines.forEachIndexed { lineIndex, line ->
-                                item(key = "$hunkIndex:$lineIndex") { DiffLineRow(line, code) }
-                            }
-                        }
-                        if (current.result.skippedAfter > 0) item(key = "skip:end") { FoldedLines(current.result.skippedAfter) }
-                        if (current.result.hunks.isEmpty()) item(key = "same") {
-                            Text(stringResource(R.string.chat_diff_same), style = type.subhead, color = colors.textSecondary, modifier = Modifier.padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg))
-                        }
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The name scrolls when long; the counts keep their full width after it and
+                    // sit 16 dp behind a short name, which only claims the width it needs.
+                    FadingScrollingText(
+                        text = file.path.substringAfterLast('/'),
+                        style = type.headline.copy(fontFamily = type.code.fontFamily),
+                        color = colors.textPrimary,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    val base = when (ready?.diff?.base) {
+                        "turn" -> stringResource(R.string.chat_diff_base_turn)
+                        "current" -> stringResource(R.string.chat_diff_base_current)
+                        else -> null
                     }
+                    val digits = type.subhead.copy(fontFeatureSettings = "tnum")
+                    Row(
+                        Modifier.padding(start = LodySpacing.lg),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
+                    ) {
+                        if (base != null) Text(base, style = type.footnote, color = colors.textTertiary)
+                        Text("+${ready?.diff?.added ?: file.added}", style = digits, color = colors.diffAddedText)
+                        Text("−${ready?.diff?.removed ?: file.removed}", style = digits, color = colors.diffRemovedText)
+                    }
+                }
+                val folder = file.path.substringBeforeLast('/', "")
+                if (folder.isNotEmpty()) {
+                    FadingScrollingText(
+                        text = folder,
+                        style = type.caption,
+                        color = colors.textTertiary,
+                        modifier = Modifier.fillMaxWidth().padding(top = LodySpacing.xxs),
+                    )
+                }
+            }
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(LodyIcons.More, contentDescription = stringResource(R.string.chat_diff_more), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
+                }
+                DropdownMenu(menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_diff_copy_file_name), style = type.body) },
+                        leadingIcon = { Icon(LodyIcons.Copy, contentDescription = null, modifier = Modifier.size(LodyIconSize.sm)) },
+                        onClick = { menuOpen = false; copy(file.path.substringAfterLast('/')) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_diff_copy_path), style = type.body) },
+                        leadingIcon = { Icon(LodyIcons.Folder, contentDescription = null, modifier = Modifier.size(LodyIconSize.sm)) },
+                        onClick = { menuOpen = false; copy(file.path) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_diff_copy_contents), style = type.body) },
+                        leadingIcon = { Icon(LodyIcons.File, contentDescription = null, modifier = Modifier.size(LodyIconSize.sm)) },
+                        enabled = previewText != null,
+                        onClick = { menuOpen = false; previewText?.let(::copy) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_diff_copy_patch), style = type.body) },
+                        leadingIcon = { Icon(LodyIcons.Diff, contentDescription = null, modifier = Modifier.size(LodyIconSize.sm)) },
+                        enabled = previewText != null && ready?.diff?.oldText != null,
+                        onClick = {
+                            menuOpen = false
+                            val oldText = ready?.diff?.oldText
+                            val newText = previewText
+                            if (oldText != null && newText != null) scope.launch {
+                                val patch = withContext(Dispatchers.Default) { UnifiedPatch.make(file.path, oldText, newText) }
+                                copy(patch)
+                            }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_diff_preview_file), style = type.body) },
+                        leadingIcon = { Icon(LodyIcons.Eye, contentDescription = null, modifier = Modifier.size(LodyIconSize.sm)) },
+                        enabled = previewText != null,
+                        onClick = { menuOpen = false; previewing = true },
+                    )
+                }
+            }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            androidx.compose.animation.Crossfade(state, label = "diff-state", modifier = Modifier.fillMaxSize()) { current ->
+                when (current) {
+                    DiffState.Loading -> Box(Modifier.fillMaxWidth().padding(LodySpacing.xl), contentAlignment = Alignment.Center) {
+                        app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.md), color = colors.iconTertiary)
+                    }
+                    DiffState.Unavailable, DiffState.Binary, DiffState.TooLarge -> Text(
+                        stringResource(
+                            when (current) {
+                                DiffState.Binary -> R.string.chat_diff_binary
+                                DiffState.TooLarge -> R.string.chat_diff_too_large
+                                else -> R.string.chat_diff_unavailable
+                            },
+                        ),
+                        style = type.subhead, color = colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+                    )
+                    is DiffState.Ready -> ReadyDiff(current.result, style, wrap, code)
+                }
+            }
+            if (ready != null) {
+                // Fade the code out under the floating controls, as iOS `LodyEdgeFade` does.
+                Box(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(DiffControlsInset)
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, colors.bgBase))),
+                )
+                DiffControls(
+                    style, wrap,
+                    onStyle = { style = it; DiffPreferences.setStyle(context, it) },
+                    onWrap = { wrap = it; DiffPreferences.setWrap(context, it) },
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = LodySpacing.lg),
+                )
+            }
+        }
+    }
+}
+
+/** One-line text that can be dragged sideways; each edge fades only while more text waits there. */
+@Composable
+private fun FadingScrollingText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LodyTheme.colors
+    val scroll = remember(text) { ScrollState(0) }
+    Box(modifier.clipToBounds()) {
+        // Wrap a short line so it does not claim the row's leftover width; a long line still
+        // stops at the viewport and scrolls under the fixed fade.
+        Box(Modifier.horizontalScroll(scroll)) {
+            Text(text, style = style, color = color, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip)
+        }
+        // The overlay matches the text height without feeding its own height back into the header.
+        Box(Modifier.matchParentSize()) {
+            if (scroll.value > 0) {
+                Box(
+                    Modifier.align(Alignment.CenterStart).width(HeaderFadeWidth).fillMaxHeight()
+                        .background(Brush.horizontalGradient(listOf(colors.bgBase, Color.Transparent))),
+                )
+            }
+            if (scroll.value < scroll.maxValue) {
+                Box(
+                    Modifier.align(Alignment.CenterEnd).width(HeaderFadeWidth).fillMaxHeight()
+                        .background(Brush.horizontalGradient(listOf(Color.Transparent, colors.bgBase))),
+                )
+            }
+        }
+    }
+}
+
+/** The selected layout and line-wrapping, floating at the bottom as iOS `LodyDiffToolbar`. */
+@Composable
+private fun DiffControls(
+    style: DiffStyle,
+    wrap: Boolean,
+    onStyle: (DiffStyle) -> Unit,
+    onWrap: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val type = LodyTheme.typography
+    val colors = LodyTheme.colors
+    val haptics = LocalHapticFeedback.current
+    fun tick() = haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+    Row(modifier.height(LodySize.controlMd), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm)) {
+        // Both groups use the same segment width, so the two pills read as one control family.
+        SegmentGroup {
+            listOf(DiffStyle.Unified to R.string.chat_diff_unified, DiffStyle.Split to R.string.chat_diff_split).forEach { (value, label) ->
+                Segment(selected = style == value, onClick = { if (style != value) { tick(); onStyle(value) } }) {
+                    Text(stringResource(label), style = type.label, color = if (style == value) colors.textPrimary else colors.textSecondary)
+                }
+            }
+        }
+        SegmentGroup {
+            listOf(true to R.string.chat_diff_wrap, false to R.string.chat_diff_no_wrap).forEach { (value, label) ->
+                Segment(selected = wrap == value, onClick = { if (wrap != value) { tick(); onWrap(value) } }) {
+                    Icon(
+                        if (value) LodyIcons.TextWrap else LodyIcons.MoveHorizontal,
+                        contentDescription = stringResource(label),
+                        tint = if (wrap == value) colors.textPrimary else colors.textSecondary,
+                        modifier = Modifier.size(LodyIconSize.sm),
+                    )
                 }
             }
         }
     }
 }
 
+/** One pill: an opaque tinted track with the selected segment as a white capsule (iOS). */
+@Composable
+private fun SegmentGroup(content: @Composable RowScope.() -> Unit) {
+    val colors = LodyTheme.colors
+    Row(
+        Modifier.height(LodySize.controlSm).clip(CircleShape)
+            // Compose the translucent tint over an opaque base, so code behind the floating
+            // controls never shows through the toolbar.
+            .background(colors.bgBase)
+            .background(colors.fillTertiary)
+            .padding(DiffSegmentInset),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}
+
+@Composable
+private fun RowScope.Segment(
+    selected: Boolean,
+    onClick: () -> Unit,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val colors = LodyTheme.colors
+    Row(
+        Modifier.fillMaxHeight().clip(CircleShape)
+            .background(if (selected) colors.bgOverlay else Color.Transparent)
+            .then(
+                if (selected) Modifier.border(0.5.dp, colors.borderSubtle.copy(alpha = 0.5f), CircleShape)
+                else Modifier,
+            )
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .widthIn(min = DiffSegmentWidth)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        content = content,
+    )
+}
+
+/** Wrapped rows fill the viewport; source-width rows scroll horizontally (iOS `DiffDocumentView`). */
+@Composable
+private fun ReadyDiff(result: LineDiff.Result, style: DiffStyle, wrap: Boolean, code: TextStyle) {
+    val longLineHint = stringResource(R.string.chat_diff_line_too_long)
+    if (wrap) {
+        SelectionContainer {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = DiffControlsInset)) {
+                diffRows(result, style, code, wrap = true)
+            }
+        }
+        return
+    }
+    if (style == DiffStyle.Split) {
+        // Split keeps both panes on screen; one offset moves both so a wide line stays comparable.
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
+            val measurer = rememberTextMeasurer()
+            val textWidth = remember(result, density) {
+                with(density) { measureMaxCodeWidth(measurer, result, code, longLineHint).toDp() + LodySpacing.lg }
+            }
+            // One pane's text viewport: half the row, less the fixed line number and paddings.
+            val paneText = maxWidth / 2 - LodySpacing.sm - LodySpacing.xs * 2 - 32.dp
+            val maxOffset = with(density) { (textWidth - paneText).toPx().coerceAtLeast(0f) }
+            val offset = remember { mutableFloatStateOf(0f) }
+            val currentMax = rememberUpdatedState(maxOffset)
+            // A new file starts at the source's first column, never at the previous file's offset.
+            LaunchedEffect(result, maxOffset) { offset.floatValue = 0f }
+            val scroll = remember {
+                ScrollableState { delta ->
+                    val before = offset.floatValue
+                    val next = (before + delta).coerceIn(0f, currentMax.value)
+                    offset.floatValue = next
+                    next - before
+                }
+            }
+            // The scrollable fills the content area, so empty space below a short diff drags too.
+            Box(Modifier.fillMaxSize().scrollable(scroll, Orientation.Horizontal, reverseDirection = true)) {
+                SelectionContainer {
+                    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = DiffControlsInset)) {
+                        diffRows(result, style, code, wrap = false, split = SplitScroll(offset))
+                    }
+                }
+                // The split runs the full height, so the empty space below a one-line diff still scrolls.
+                Box(
+                    Modifier.align(Alignment.Center).fillMaxHeight().padding(bottom = DiffControlsTop)
+                        .width(1.dp).background(LodyTheme.colors.borderSubtle),
+                )
+            }
+        }
+        return
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val measurer = rememberTextMeasurer()
+        val viewport = maxWidth
+        val contentWidth = remember(result, viewport, density) {
+            val text = with(density) { measureMaxCodeWidth(measurer, result, code, longLineHint).toDp() }
+            maxOf(viewport, DiffUnifiedGutter + text + LodySpacing.lg)
+        }
+        val hScroll = rememberScrollState()
+        Box(Modifier.fillMaxSize().horizontalScroll(hScroll)) {
+            SelectionContainer {
+                LazyColumn(Modifier.width(contentWidth).fillMaxHeight(), contentPadding = PaddingValues(bottom = DiffControlsInset)) {
+                    diffRows(result, style, code, wrap = false)
+                }
+            }
+        }
+    }
+}
+
+/** The widest shown line in pixels, capped so a pathological line cannot exceed layout limits. */
+private fun measureMaxCodeWidth(measurer: TextMeasurer, result: LineDiff.Result, style: TextStyle, hint: String): Int {
+    // Only the longest lines can set the width; measuring every shown line freezes a large diff.
+    val widest = widestLines(result).maxOfOrNull { line ->
+        measurer.measure(AnnotatedString(sourceLine(line, hint)), style, softWrap = false, maxLines = 1, skipCache = true).size.width
+    } ?: 0
+    return minOf(widest, MaxCodeWidthPx)
+}
+
+/** One source-width line; a single enormous line is cut so the page stays responsive. */
+private fun sourceLine(text: String, hint: String): String =
+    if (text.length <= MaxSourceLineChars) text else text.take(MaxSourceLineChars) + "… " + hint
+
+private fun androidx.compose.foundation.lazy.LazyListScope.diffRows(
+    result: LineDiff.Result,
+    style: DiffStyle,
+    code: TextStyle,
+    wrap: Boolean,
+    split: SplitScroll? = null,
+) {
+    result.hunks.forEachIndexed { hunkIndex, hunk ->
+        if (hunk.skippedBefore > 0) item(key = "skip:$hunkIndex") { FoldedLines(hunk.skippedBefore) }
+        when (style) {
+            DiffStyle.Unified -> hunk.lines.forEachIndexed { lineIndex, line ->
+                item(key = "$hunkIndex:$lineIndex") { UnifiedDiffLineRow(line, code, wrap) }
+            }
+            DiffStyle.Split -> LineDiff.pairs(hunk.lines).forEachIndexed { pairIndex, pair ->
+                item(key = "$hunkIndex:$pairIndex") { SplitDiffLineRow(pair, code, wrap, split) }
+            }
+        }
+    }
+    if (result.skippedAfter > 0) item(key = "skip:end") { FoldedLines(result.skippedAfter) }
+    if (result.hunks.isEmpty()) item(key = "same") {
+        Text(
+            stringResource(R.string.chat_diff_same), style = LodyTheme.typography.subhead, color = LodyTheme.colors.textSecondary,
+            modifier = Modifier.padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+        )
+    }
+}
+
+/** Split source-width text: both panes read one offset, so they stay aligned while dragged. */
+private data class SplitScroll(val offset: State<Float>)
+
 private sealed interface DiffState {
     data object Loading : DiffState
     data object Unavailable : DiffState
     data object Binary : DiffState
     data object TooLarge : DiffState
-    data class Ready(val result: LineDiff.Result) : DiffState
+    data class Ready(val diff: app.lody.android.runtime.FileDiff, val result: LineDiff.Result) : DiffState
 }
 
 @Composable
@@ -788,21 +1184,258 @@ private fun FoldedLines(count: Int) {
 }
 
 @Composable
-private fun DiffLineRow(line: LineDiff.Line, style: androidx.compose.ui.text.TextStyle) {
+private fun UnifiedDiffLineRow(line: LineDiff.Line, style: TextStyle, wrap: Boolean) {
     val colors = LodyTheme.colors
+    val longLineHint = stringResource(R.string.chat_diff_line_too_long)
     val (background, ink, mark) = when (line.kind) {
         LineDiff.Kind.Added -> Triple(colors.diffAddedBg, colors.diffAddedText, "+")
         LineDiff.Kind.Removed -> Triple(colors.diffRemovedBg, colors.diffRemovedText, "−")
-        LineDiff.Kind.Context -> Triple(androidx.compose.ui.graphics.Color.Transparent, colors.textSecondary, " ")
+        LineDiff.Kind.Context -> Triple(Color.Transparent, colors.textSecondary, " ")
     }
     val number = style.copy(color = colors.textTertiary, fontFeatureSettings = "tnum")
-    Row(Modifier.fillMaxWidth().background(background).padding(horizontal = LodySpacing.sm)) {
-        Text(line.oldNumber?.toString().orEmpty(), style = number, textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.width(32.dp))
-        Text(line.newNumber?.toString().orEmpty(), style = number, textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.width(32.dp))
+    Row(
+        Modifier.fillMaxWidth().background(background).drawBehind {
+            // A faint gutter behind both number columns, so rows scan by line number.
+            drawRect(colors.fillTertiary, size = Size(UnifiedGutter.toPx(), size.height))
+        }.padding(horizontal = LodySpacing.sm),
+    ) {
+        LineNumber(line.oldNumber, number, 32.dp)
+        LineNumber(line.newNumber, number, 32.dp)
         Text(mark, style = style.copy(color = ink), modifier = Modifier.padding(horizontal = LodySpacing.xs))
-        Text(line.text, style = style.copy(color = if (line.kind == LineDiff.Kind.Context) colors.textPrimary else ink), modifier = Modifier.weight(1f))
+        val textStyle = style.copy(color = if (line.kind == LineDiff.Kind.Context) colors.textPrimary else ink)
+        if (wrap) {
+            WrappedLine(
+                text = line.text,
+                style = textStyle,
+                hint = stringResource(R.string.chat_diff_line_truncated),
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            Text(
+                sourceLine(line.text, longLineHint),
+                style = textStyle,
+                softWrap = false,
+                maxLines = 1,
+            )
+        }
     }
 }
+
+@Composable
+private fun SplitDiffLineRow(pair: LineDiff.Pair, style: TextStyle, wrap: Boolean, split: SplitScroll?) {
+    val colors = LodyTheme.colors
+    val leftBackground = splitTint(pair.left, colors)
+    val rightBackground = splitTint(pair.right, colors)
+    Row(
+        Modifier.fillMaxWidth().drawBehind {
+            val half = size.width / 2f
+            drawRect(leftBackground, size = Size(half, size.height))
+            drawRect(rightBackground, topLeft = Offset(half, 0f), size = Size(size.width - half, size.height))
+            // Both panes get the same faint number gutter, drawn over the diff tint.
+            val gutter = SplitGutter.toPx()
+            drawRect(colors.fillTertiary, size = Size(gutter, size.height))
+            drawRect(colors.fillTertiary, topLeft = Offset(half, 0f), size = Size(gutter, size.height))
+        }.padding(horizontal = LodySpacing.sm),
+    ) {
+        if (!wrap && split != null) {
+            SplitScrollSide(pair.left, pair.left?.oldNumber, style, split.offset, Modifier.weight(1f))
+            SplitScrollSide(pair.right, pair.right?.newNumber, style, split.offset, Modifier.weight(1f))
+        } else {
+            SplitDiffSide(pair.left, pair.left?.oldNumber, style, Modifier.weight(1f))
+            SplitDiffSide(pair.right, pair.right?.newNumber, style, Modifier.weight(1f))
+        }
+    }
+}
+
+private fun splitTint(line: LineDiff.Line?, colors: app.lody.android.designsystem.LodyColors): Color = when (line?.kind) {
+    LineDiff.Kind.Added -> colors.diffAddedBg
+    LineDiff.Kind.Removed -> colors.diffRemovedBg
+    // The side with no line is the one the other side added or removed; a faint gray keeps the
+    // two columns paired instead of leaving a hole in the comparison.
+    null -> colors.fillTertiary
+    else -> Color.Transparent
+}
+
+@Composable
+private fun SplitDiffSide(line: LineDiff.Line?, number: Int?, style: TextStyle, modifier: Modifier) {
+    val colors = LodyTheme.colors
+    val ink = when (line?.kind) {
+        LineDiff.Kind.Added -> colors.diffAddedText
+        LineDiff.Kind.Removed -> colors.diffRemovedText
+        else -> colors.textPrimary
+    }
+    val numberStyle = style.copy(color = colors.textTertiary, fontFeatureSettings = "tnum")
+    Row(modifier.padding(horizontal = LodySpacing.xs).clipToBounds()) {
+        LineNumber(number, numberStyle, 32.dp)
+        WrappedLine(
+            text = line?.text.orEmpty(),
+            style = style.copy(color = ink),
+            hint = stringResource(R.string.chat_diff_line_truncated),
+            modifier = Modifier.weight(1f).padding(start = LodySpacing.xs),
+        )
+    }
+}
+
+/**
+ * A diff line number. Its column stays [width] wide, so a five-digit number shrinks with
+ * [TextAutoSize] instead of wrapping onto a second row and breaking the row's rhythm.
+ */
+@Composable
+private fun LineNumber(number: Int?, style: TextStyle, width: Dp) {
+    Text(
+        number?.toString().orEmpty(),
+        style = style,
+        textAlign = TextAlign.End,
+        maxLines = 1,
+        softWrap = false,
+        autoSize = TextAutoSize.StepBased(
+            minFontSize = LineNumberMinFontSize,
+            maxFontSize = style.fontSize,
+            stepSize = LineNumberFontStep,
+        ),
+        modifier = Modifier.width(width),
+    )
+}
+
+/**
+ * One diff line with wrapping. A minified or generated line can be hundreds of kilobytes; a single
+ * `Text` builds one enormous layout on the main thread, so the line is drawn as bounded runs that
+ * begin on line breaks of the full layout, which keeps the wrap seamless. Past [MaxWrappedLineChars]
+ * — about [MaxWrapChunks] runs — the tail is replaced by [hint].
+ */
+@Composable
+private fun WrappedLine(text: String, style: TextStyle, hint: String, modifier: Modifier = Modifier) {
+    val shown = remember(text, hint) { cappedWrappedLine(text, hint) }
+    if (shown.length <= MaxWrapChunkChars) {
+        Text(shown, style = style, modifier = modifier, softWrap = true, maxLines = Int.MAX_VALUE)
+        return
+    }
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints(modifier) {
+        val chunks = remember(shown, constraints.maxWidth, style) {
+            lineBoundaryChunks(shown, constraints.maxWidth, style, measurer)
+        }
+        Column {
+            chunks.forEach { chunk ->
+                Text(chunk, style = style, softWrap = true, maxLines = Int.MAX_VALUE)
+            }
+        }
+    }
+}
+
+/** One split pane without wrapping: the number stays put while the source-width text scrolls. */
+@Composable
+private fun SplitScrollSide(
+    line: LineDiff.Line?,
+    number: Int?,
+    style: TextStyle,
+    scroll: State<Float>,
+    modifier: Modifier,
+) {
+    val colors = LodyTheme.colors
+    val ink = when (line?.kind) {
+        LineDiff.Kind.Added -> colors.diffAddedText
+        LineDiff.Kind.Removed -> colors.diffRemovedText
+        else -> colors.textPrimary
+    }
+    val numberStyle = style.copy(color = colors.textTertiary, fontFeatureSettings = "tnum")
+    val longLineHint = stringResource(R.string.chat_diff_line_too_long)
+    Row(modifier.padding(horizontal = LodySpacing.xs)) {
+        LineNumber(number, numberStyle, 32.dp)
+        // Measure the line at source width, then slide it under the fixed line number and clip.
+        Layout(
+            content = {
+                Text(
+                    sourceLine(line?.text.orEmpty(), longLineHint),
+                    style = style.copy(color = ink),
+                    modifier = Modifier.padding(start = LodySpacing.xs),
+                    softWrap = false,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                )
+            },
+            modifier = Modifier.weight(1f).clipToBounds(),
+        ) { measurables, constraints ->
+            val text = measurables.first().measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
+            layout(constraints.maxWidth, text.height) {
+                text.placeRelative(-scroll.value.roundToInt(), 0)
+            }
+        }
+    }
+}
+
+/** The post-turn file as read-only, line-numbered source, opened from More → Preview file. */
+@Composable
+private fun FilePreviewPage(path: String, text: String, onBack: () -> Unit) {
+    val colors = LodyTheme.colors
+    val type = LodyTheme.typography
+    val code = type.footnote.copy(fontFamily = type.code.fontFamily)
+    val number = code.copy(color = colors.textTertiary, fontFeatureSettings = "tnum")
+    val lines = remember(text) {
+        if (text.isEmpty()) emptyList() else text.removeSuffix("\n").split("\n")
+    }
+    Column(Modifier.fillMaxWidth().fillMaxHeight(sheetHeightFraction())) {
+        Row(Modifier.padding(end = TranscriptMargin), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(LodyIcons.Back, contentDescription = stringResource(R.string.chat_diff_preview_back), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(path.substringAfterLast('/'), style = type.headline.copy(fontFamily = type.code.fontFamily), color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                val folder = path.substringBeforeLast('/', "")
+                if (folder.isNotEmpty()) Text(folder, style = type.caption, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.StartEllipsis)
+            }
+        }
+        SelectionContainer(Modifier.fillMaxWidth().weight(1f)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = LodySpacing.xl)) {
+                itemsIndexed(lines) { index, line ->
+                    Row(
+                        Modifier.fillMaxWidth().drawBehind {
+                            drawRect(colors.fillTertiary, size = Size(PreviewGutter.toPx(), size.height))
+                        }.padding(horizontal = LodySpacing.sm),
+                    ) {
+                        LineNumber(index + 1, number, 40.dp)
+                        WrappedLine(
+                            text = line,
+                            style = code.copy(color = colors.textPrimary),
+                            hint = stringResource(R.string.chat_diff_line_truncated),
+                            modifier = Modifier.weight(1f).padding(start = LodySpacing.xs),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Height of the fade under the floating controls; [DiffControlsTop] is where the pill starts. */
+private val DiffControlsInset = 72.dp
+private val DiffControlsTop = 56.dp
+private val HeaderFadeWidth = 24.dp
+private val DiffUnifiedGutter = 104.dp
+
+/** Both toolbar segments share one width, so the layout and wrap pills line up. */
+private val DiffSegmentWidth = 72.dp
+private val DiffSegmentInset = 2.dp
+
+/** Faint number gutters, measured from the row's leading edge including its padding. */
+private val UnifiedGutter = LodySpacing.sm + 64.dp
+private val SplitGutter = LodySpacing.sm + LodySpacing.xs + 32.dp
+private val PreviewGutter = LodySpacing.sm + 40.dp
+
+/** A wide line number shrinks to this floor before it is allowed to clip. */
+private val LineNumberMinFontSize = 8.sp
+private val LineNumberFontStep = 0.5.sp
+
+/**
+ * Longest slice of one source line drawn in source-width mode. The platform cannot draw a single
+ * glyph run much wider than 32k px, so a generated or minified line past this is cut, with an
+ * ellipsis and a hint to switch to wrap mode (which lays the line out across many rows) instead
+ * of silently rendering blank.
+ */
+private const val MaxSourceLineChars = 1500
+
+/** Compose layout widths stop being meaningful above this; longer source-width text is clipped. */
+private const val MaxCodeWidthPx = 200_000
 
 internal enum class Segment { Only, First, Middle, Last }
 
