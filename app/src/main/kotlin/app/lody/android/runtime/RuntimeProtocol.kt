@@ -179,6 +179,7 @@ internal object RuntimeProtocol {
             }
         }
         val ok = json.optString("status") == "ok"
+        val tooLarge = ok && listOf("old", "new").any { json.optJSONObject(it)?.optString("kind") == "too_large" }
         return FileDiff(
             path = json.optString("path"),
             oldText = if (ok) side("old") else null,
@@ -186,7 +187,8 @@ internal object RuntimeProtocol {
             added = (json.opt("add") as? Number)?.toInt(),
             removed = (json.opt("del") as? Number)?.toInt(),
             unavailable = if (ok) null else json.optString("reason").ifBlank { "unavailable" },
-            tooLarge = ok && listOf("old", "new").any { json.optJSONObject(it)?.optString("kind") == "too_large" },
+            base = json.optString("base").ifBlank { null },
+            tooLarge = tooLarge,
         )
     }
 

@@ -599,7 +599,9 @@ data class FileDiff(
     val added: Int? = null,
     val removed: Int? = null,
     val unavailable: String? = null,
-    /** A side the computer refused to send because it exceeds its size limit. */
+    /** What the new side is compared against: `turn` (the turn's start) or `current` (now). */
+    val base: String? = null,
+    /** The computer refused a side as `too_large`; it is text, but not enough was sent to diff. */
     val tooLarge: Boolean = false,
 )
 

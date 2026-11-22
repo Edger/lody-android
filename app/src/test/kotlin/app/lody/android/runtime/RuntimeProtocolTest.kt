@@ -237,6 +237,27 @@ class RuntimeProtocolTest {
   assertEquals(JSONObject().put("action", "start").put("udid", "U").toString(), PreviewJson.command(DevicePlatform.IOS, DeviceCommand.Start("U", "clear")).toString())
   assertEquals("saver", PreviewJson.command(DevicePlatform.ANDROID, DeviceCommand.Start("Pixel_8", "saver")).getString("quality"))
  }
+
+ @Test fun turnDiffRetainsItsBaseAndCounts() {
+  val diff = RuntimeProtocol.diff(JSONObject("""{"status":"ok","base":"turn","path":"a.kt","old":{"kind":"text","text":"a\n"},"new":{"kind":"text","text":"b\n"},"add":1,"del":1}"""))
+  assertEquals("turn", diff.base)
+  assertEquals("a\n", diff.oldText)
+  assertEquals("b\n", diff.newText)
+  assertEquals(1, diff.added)
+  assertEquals(1, diff.removed)
+  val current = RuntimeProtocol.diff(JSONObject("""{"status":"ok","base":"current","path":"a.kt","old":{"kind":"missing"},"new":{"kind":"text","text":"b\n"}}"""))
+  assertEquals("current", current.base)
+  assertEquals("", current.oldText)
+ }
+
+ @Test fun anOversizedDiffSideIsTooLargeRatherThanBinary() {
+  val diff = RuntimeProtocol.diff(JSONObject("""{"status":"ok","base":"current","path":"big.kt","old":{"kind":"text","text":"a\n"},"new":{"kind":"too_large"}}"""))
+  assertTrue(diff.tooLarge)
+  assertNull(diff.newText)
+  val binary = RuntimeProtocol.diff(JSONObject("""{"status":"ok","base":"current","path":"logo.png","old":{"kind":"missing"},"new":{"kind":"binary"}}"""))
+  assertFalse(binary.tooLarge)
+ }
+
  @Test fun diffKeepsAnOversizedSideDistinctFromBinary() {
   val oversized = RuntimeProtocol.diff(JSONObject("""{"status":"ok","path":"big.ts","old":{"kind":"text","text":"a"},"new":{"kind":"too_large"}}"""))
   assertTrue(oversized.tooLarge)
