@@ -9,25 +9,42 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import app.lody.android.chat.FilesSheet
+import app.lody.android.chat.WorkspaceChangesSheet
 import app.lody.android.designsystem.LodyColors
 import app.lody.android.designsystem.LodyTheme
 import app.lody.android.runtime.FileChange
 import app.lody.android.runtime.FileDiff
+import app.lody.android.runtime.WorkspaceChange
+import app.lody.android.runtime.WorkspaceChanges
 
 /**
- * Debug-only diff surface: the production FilesSheet and DiffPage over fixed text, so the
- * Unified / Split, wrap and More controls can be exercised without a signed-in conversation.
+ * Debug-only diff surface: the production FilesSheet (or the working-tree sheet with
+ * `--ez workspace true`) and DiffPage over fixed text, so the Unified / Split, wrap and More
+ * controls can be exercised without a signed-in conversation.
  *
- * adb shell am start -n ai.lody.android/app.lody.android.diagnostics.DiffProbeActivity
+ * adb shell am start -n ai.lody.android/app.lody.android.diagnostics.DiffProbeActivity [--ez workspace true]
  */
 class DiffProbeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        val workspace = intent.getBooleanExtra("workspace", false)
         setContent {
             LodyTheme {
                 Box(Modifier.fillMaxSize().background(LodyTheme.colors.bgBase)) {
-                    FilesSheet(entryId = "probe", files = Fixtures, loadDiff = { _, path -> diffFor(path) }, onDismiss = {})
+                    if (workspace) {
+                        WorkspaceChangesSheet(
+                            loadChanges = {
+                                WorkspaceChanges.Ready(
+                                    Fixtures.map { WorkspaceChange(it.path, it.added, it.removed) },
+                                )
+                            },
+                            loadDiff = { path -> diffFor(path) },
+                            onDismiss = {},
+                        )
+                    } else {
+                        FilesSheet(entryId = "probe", files = Fixtures, loadDiff = { _, path -> diffFor(path) }, onDismiss = {})
+                    }
                 }
             }
         }

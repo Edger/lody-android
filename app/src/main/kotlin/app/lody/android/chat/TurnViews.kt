@@ -764,12 +764,14 @@ internal fun WorkspaceChangesSheet(
         onDismissRequest = onDismiss,
         sheetState = sheet,
         containerColor = colors.bgBase,
+        // The 640 dp default would leave side margins on a landscape phone.
+        sheetMaxWidth = Dp.Infinity,
         // The list and the diff run to the sheet's own edges; the final list item keeps itself
         // clear of the navigation bar, so rows pass beneath it instead of stopping above it.
         dragHandle = { SheetGrabber() },
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
     ) {
-        Box(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+        Box(Modifier.fillMaxWidth().fillMaxHeight(sheetHeightFraction())) {
             when (val current = state) {
                 WorkspaceFiles.Loading -> Box(
                     Modifier.fillMaxSize().padding(top = SheetHeaderRowHeight),
