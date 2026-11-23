@@ -120,6 +120,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     BackHandler(onBack = onBack)
     var retry by remember(id, scope) { mutableIntStateOf(0) }
     var status by remember(id, scope) { mutableStateOf("syncing") }
+    var sendReady by remember(id, scope) { mutableStateOf(false) }
+    var controlReady by remember(id, scope) { mutableStateOf(false) }
     var manualReconnect by remember(id, scope) { mutableStateOf(false) }
     var connectingShown by remember(id, scope) { mutableStateOf(false) }
     LaunchedEffect(scope, id, status) {
@@ -247,6 +249,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 historyLoading = snapshot.historyLoading
                 billableTurns = snapshot.billableTurnCount
                 status = snapshot.status
+                sendReady = snapshot.sendReady
+                controlReady = snapshot.controlReady
                 if (snapshot.messages.any { it.streaming }) delay(33)
             }
         } finally { repair.close() }
@@ -298,7 +302,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     // Web's free-plan turn quota: from turn 25 the composer says how many remain, and at 30 it
     // closes. The plan is read once the count nears the limit (iOS `watchTier`); an unknown plan
     // shows nothing and the runtime still refuses an over-limit send.
-    val quotaTurns = billableTurns.takeIf { status == "live" }
+    val quotaTurns = billableTurns.takeIf { sendReady }
     val nearQuota = (quotaTurns ?: 0) >= FREE_SESSION_TURN_LIMIT - FREE_SESSION_TURN_WARNING_REMAINING
     var planTier by remember(id, scope) { mutableStateOf<String?>(null) }
     LaunchedEffect(scope, id, nearQuota) {
@@ -530,11 +534,12 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     val running = session?.status in RunningStatuses || pending.any { it.delivery == Delivery.Sending || it.delivery == Delivery.Waiting }
     val hasStreamingAssistant = messages.lastOrNull { it.role != "user" }?.streaming == true
     val queuedBehavior = AppPreferences.queuedMessageBehavior(appContext)
-    LaunchedEffect(scope, id, status == "live", session?.status, hasStreamingAssistant, capability?.steer, queuedBehavior) {
+    LaunchedEffect(scope, id, sendReady, session?.status, hasStreamingAssistant, capability?.steer, queuedBehavior) {
         application.sessionOutbox.setForeground(
             scope, id,
             SessionOutbox.Foreground(
-                live = status == "live",
+                // Roost delivery follows send readiness, which survives a history subscription reconnect.
+                live = sendReady,
                 busy = session?.status in RunningStatuses || hasStreamingAssistant,
                 streaming = hasStreamingAssistant,
                 steerable = capability?.steer == true,
@@ -659,7 +664,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     val stopFailed = stringResource(R.string.chat_stop_failed)
     val stopHaptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val stop = {
-        if (runningTurn != null && session != null && status == "live" && !stopping) {
+        if (runningTurn != null && session != null && controlReady && !stopping) {
             stopping = true
             stopHaptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.ContextClick)
             coroutines.launch {
@@ -1145,8 +1150,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                         loadDiff = { entryId, path -> repository.turnDiff(scope, id, entryId, path) },
                         meId = context.me?.id,
                         decideProposal = { card, accept -> repository.decideProposal(scope, id, card.entryId, card.itemId, accept) },
-                        // Only a live, open conversation takes an answer; otherwise the approval just waits.
-                        respondPermission = if (status == "live" && context.session?.isTabClosed != true) ({ entryId, itemId, requestId, optionId, answers ->
+                        // An open conversation takes an answer once commands are ready, including during a Roost history reconnect; otherwise the approval just waits.
+                        respondPermission = if (controlReady && context.session?.isTabClosed != true) ({ entryId, itemId, requestId, optionId, answers ->
                             repository.respondPermission(scope, id, entryId, itemId, requestId, optionId, answers)
                         }) else null,
                     ) }
@@ -1258,7 +1263,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 plan = capability?.planOn(optionValues) == true,
                 fast = capability?.fastOn(optionValues, modelId) == true,
                 onRunConfig = if (session != null) ({ runConfig = true }) else null,
-                stoppable = runningTurn != null && status == "live",
+                stoppable = runningTurn != null && controlReady,
                 stopping = stopping,
                 attachments = attachments,
                 onPickPhotos = {

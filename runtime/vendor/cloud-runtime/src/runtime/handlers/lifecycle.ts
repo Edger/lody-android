@@ -14,12 +14,13 @@ import {
   resumeSessions,
 } from '../session';
 import type { RuntimeContext } from './context.ts';
+import type { HistoryTokenIntent } from '../../contract/sharing.ts';
 import { sessionActionMeta } from '../fork-session';
 
 import {
   machineSupportsSessionHistoryProtocol,
   machineSupportsSessionHistoryIncremental,
-  machineSupportsSessionHistoryWatch,
+  machineSupportsSessionHistorySubscription,
   machineSupportsSessionHistoryPatches,
   machineSupportsSessionHistoryInspection,
   machineSupportsSessionInputAcceptance,
@@ -77,7 +78,9 @@ export function registerLifecycle(ctx: RuntimeContext) {
         machineId: meta.machineId as string,
         incremental:
           machineSupportsSessionHistoryIncremental(capabilityCarrier),
-        watch: machineSupportsSessionHistoryWatch(capabilityCarrier),
+        live: machineSupportsSessionHistorySubscription(capabilityCarrier),
+        getHistoryProof: (intent: HistoryTokenIntent) =>
+          ctx.broker('historyToken', { intent }),
         acceptsInput: machineSupportsSessionInputAcceptance(capabilityCarrier),
         dispatchesInput: machineSupportsSessionInputDispatch(capabilityCarrier),
         isArchived: meta.isArchived === true,
