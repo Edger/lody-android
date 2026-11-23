@@ -19,6 +19,7 @@ import {roleCommands} from './role-commands.mjs';
 import {shortcutCommands} from './shortcut-commands.mjs';
 import {scheduleCommands} from './schedule-commands.mjs';
 import {proposalCommands} from './proposal-commands.mjs';
+import {withDiffScope} from './diff-commands.mjs';
 const emit=message=>globalThis.webkit.messageHandlers.dataRuntime.postMessage(message);
 // The Status view clock reads the worker's /api/time (build-time backend config, as on iOS).
 const access=createReadAccess(globalThis.fetch.bind(globalThis),emit,{timeUrl:`${LODY_MOBILE_WORKER_URL}/api/time`});
@@ -58,6 +59,10 @@ const detail={
  retryPendingInput:(sessionId,inputId)=>runtime.retryPendingInput({sessionId,inputId}),
  forgetPendingInput:(sessionId,inputId)=>runtime.forgetPendingInput({sessionId,inputId}),
  itemDetail:(sessionId,entryId,itemId)=>itemDetail({sessionId,entryId,itemId}),turnDiff:(sessionId,entryId,path)=>runtime.turnDiff({sessionId,entryId,path}),
+ // Working tree changes: every changed file, and one file's current text against its base. Reads only.
+ // `scope` is the machine's `uncommitted` comparison; omitting it keeps the default branch range.
+ workspaceChanges:(sessionId,scope,_signal)=>runtime.workspaceChanges(withDiffScope({sessionId},scope)),
+ fileDiff:(sessionId,path,scope,_signal)=>runtime.fileDiff(withDiffScope({sessionId,path},scope)),
  // Browse files: a folder of the session's local project (relative to its root) and a file's contents (relative to the session's directory). Reads only.
  listDir:(sessionId,relativePath)=>{const scope=identity;if(!scope)throw Error('not_connected');return runtime.listDir({workspaceId:scope.workspaceId,sessionId,relativePath,userId:scope.userId});},
  readFile:(sessionId,path)=>runtime.readFile({sessionId,path}),
@@ -107,4 +112,4 @@ persisted => {
  }, persisted, AbortSignal.timeout(30000));
 });
 globalThis.androidDispatch=createDispatcher(core,emit,{...cloud,...createCommands(runtime,sendWithReferences,()=>identity),...scheduleCommands(runtime,()=>identity),...proposalCommands(runtime,()=>identity),...providerCommands(runtime,()=>identity),...roleCommands(runtime,()=>identity),...shortcutCommands(runtime,()=>identity),...detail});
-emit({type:'hostReady',protocol:HOST_PROTOCOL,capabilities:[...CORE_CAPABILITIES,'connect','grant','watchSession','closeSession','loadOlderSession','forgetPendingInput','retryPendingInput','creationOptions','createAndSend','sendText','turnQuota','itemDetail','createTab','turnDiff','listDir','readFile','controlTurn','respondPermission','agentRoles','mentionCatalog','localProjects','shortcutBody','projectGroups','messageAction','setTabClosed','archiveSession','statusViewCommand','snoozePresets','markSessionRead','schedules','scheduleDetail','scheduleCommand','decideProposal','agentProviders','agentProviderDetail','agentProviderProbe','agentProviderAuth','agentProviderOperation','agentRoleSettings','shortcutCloudReply','shortcutSettings','sessionPreview','iosSimulatorControl','androidEmulatorControl','machineTokenReply']});
+emit({type:'hostReady',protocol:HOST_PROTOCOL,capabilities:[...CORE_CAPABILITIES,'connect','grant','watchSession','closeSession','loadOlderSession','forgetPendingInput','retryPendingInput','creationOptions','createAndSend','sendText','turnQuota','itemDetail','createTab','turnDiff','workspaceChanges','fileDiff','listDir','readFile','controlTurn','respondPermission','agentRoles','mentionCatalog','localProjects','shortcutBody','projectGroups','messageAction','setTabClosed','archiveSession','statusViewCommand','snoozePresets','markSessionRead','schedules','scheduleDetail','scheduleCommand','decideProposal','agentProviders','agentProviderDetail','agentProviderProbe','agentProviderAuth','agentProviderOperation','agentRoleSettings','shortcutCloudReply','shortcutSettings','sessionPreview','iosSimulatorControl','androidEmulatorControl','machineTokenReply']});
