@@ -176,6 +176,14 @@ class RuntimeProtocolTest {
   assertTrue(snapshot.historyHasMore)
   assertTrue(snapshot.historyLoading)
  }
+ @Test fun sessionCommandsCanBeReadyDuringHistorySync() {
+  val frame=JSONObject().put("type","session").put("sessionId","s").put("session",
+   """{"v":1,"status":"syncing","entries":[],"controlReady":true,"sendReady":false}""")
+  val snapshot=(RuntimeProtocol.event(frame) as RuntimeEvent.SessionUpdated).snapshot
+  assertEquals("syncing",snapshot.status)
+  assertTrue(snapshot.controlReady)
+  assertFalse(snapshot.sendReady)
+ }
  @Test fun sharedFixturesDecodeToTypedResults() {
   assertEquals(setOf("ping","setActive","probeSchema"),RuntimeProtocol.capabilities(fixtures.getJSONObject("hostReady")))
   val event=RuntimeProtocol.event(fixtures.getJSONObject("catalog")) as RuntimeEvent.CatalogUpdated
@@ -223,8 +231,8 @@ class RuntimeProtocolTest {
   assertEquals(1, unreadable.sessions.size)
  }
  @Test fun previewsCrossTheNativeBoundary() {
-  val token = RuntimeProtocol.event(JSONObject().put("type", "previewToken").put("requestId", "r").put("intent", "{\"workspaceId\":\"w\"}"))
-  assertEquals(RuntimeEvent.PreviewTokenRequested("r", "{\"workspaceId\":\"w\"}"), token)
+  val token = RuntimeProtocol.event(JSONObject().put("type", "machineToken").put("operation", "historyToken").put("requestId", "r").put("intent", "{\"workspaceId\":\"w\"}"))
+  assertEquals(RuntimeEvent.MachineTokenRequested("r", "historyToken", "{\"workspaceId\":\"w\"}"), token)
   val session = RuntimeProtocol.event(JSONObject().put("type", "session").put("sessionId", "s")
    .put("session", """{"v":1,"status":"live","entries":[],"preview":{"label":"localhost:5173","active":true}}""")) as RuntimeEvent.SessionUpdated
   assertEquals(BrowserPreview("localhost:5173", true), session.snapshot.preview)
