@@ -11,14 +11,16 @@ import {
   startAcceptedInputs,
   stopSessions,
   resumeAcceptedInputs,
+  resumeSessions,
 } from '../session';
 import type { RuntimeContext } from './context.ts';
+import type { HistoryTokenIntent } from '../../contract/sharing.ts';
 import { sessionActionMeta } from '../fork-session';
 
 import {
   machineSupportsSessionHistoryProtocol,
   machineSupportsSessionHistoryIncremental,
-  machineSupportsSessionHistoryWatch,
+  machineSupportsSessionHistorySubscription,
   machineSupportsSessionHistoryPatches,
   machineSupportsSessionHistoryInspection,
   machineSupportsSessionInputAcceptance,
@@ -76,7 +78,9 @@ export function registerLifecycle(ctx: RuntimeContext) {
         machineId: meta.machineId as string,
         incremental:
           machineSupportsSessionHistoryIncremental(capabilityCarrier),
-        watch: machineSupportsSessionHistoryWatch(capabilityCarrier),
+        live: machineSupportsSessionHistorySubscription(capabilityCarrier),
+        getHistoryProof: (intent: HistoryTokenIntent) =>
+          ctx.broker('historyToken', { intent }),
         acceptsInput: machineSupportsSessionInputAcceptance(capabilityCarrier),
         dispatchesInput: machineSupportsSessionInputDispatch(capabilityCarrier),
         isArchived: meta.isArchived === true,
@@ -128,7 +132,9 @@ export function registerLifecycle(ctx: RuntimeContext) {
         await ctx.disposeProviderOperations?.();
       }
       if (version !== scopeStartVersion) return {};
-      if (workspaceId !== state.workspace || userId !== state.userId) {
+      const scopeChanged =
+        workspaceId !== state.workspace || userId !== state.userId;
+      if (scopeChanged) {
         stopSessions();
         state.workspaceReplica = undefined;
         state.pinSections = { sections: [], loaded: false };
@@ -160,6 +166,7 @@ export function registerLifecycle(ctx: RuntimeContext) {
       );
       ctx.setForeground?.(active);
       ctx.watch('meta');
+      if (scopeChanged) ctx.refreshWorkspace();
       refreshClock();
       if (active) ctx.startPresence();
       return {};
@@ -177,6 +184,7 @@ export function registerLifecycle(ctx: RuntimeContext) {
       refreshClock();
       ctx.publish();
       ctx.startPresence();
+      resumeSessions();
       traceSessionResume();
       resumeAcceptedInputs();
     } else ctx.stopPresence();

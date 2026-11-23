@@ -17,6 +17,11 @@ For an intentional update:
 3. Replace the snapshot only after reviewing the diff; update PROVENANCE and SHA256 together. Generate hashes with the exported `hashes()` function in `runtime/snapshot.mjs`, directed at the reviewed source directory. No build regenerates the manifest automatically.
 4. Run snapshot verification, `npm ci`, JS tests, asset build, JVM and Android bridge tests. Update `runtime/contract/fixtures.json` only for an intentional contract change. Capture actual WebView/WASM results and verify release assets contain no diagnostics.
 
+Roost subscriptions use the shared owner's durable checkpoints over the existing
+RPC streams. The Android bridge accepts the scoped `historyToken` call and
+returns only the history proof minted by native for that workspace. The mirrored
+reader applies an exact-base delta or recovers from the persisted checkpoint.
+
 The Status view runtime (lody-ios `status-view-runtime`, see PROVENANCE `statusView`)
 vendors the shared Lody layout, planner and golden vectors under
 `src/protocol/lody-shared`; `runtime/test/status-view.test.mjs` runs every vector against
@@ -24,9 +29,20 @@ those copies. `runtime/contract/fixtures.json` `catalogStatusView` is the snapsh
 synthetic `catalog-status-view.json`, the Kotlin golden catalog; a test keeps them equal.
 Since that refresh the snapshot also presents `message_quote` spans in history and accepts
 `quotes` on sends; Android keeps its own quote adapter in `runtime/src` and strips `quotes`
-before the shared send, so quotes are written once. The catalog-budget harness extracts
+before the shared send, so quotes are written once. Android's send hook (`runtime/src/network.mjs`) also does what the shared `sendTurn` handler adds
+around `sendTurn`: `/shortcut:<slug>` tokens expand before references, and a conversation's first
+turn selects the workspace's default MCP servers (`sessionMcpSelection`, with a Streams grant asked
+of native through `contractBridge.requestGrant`); later turns keep their persisted selection. The catalog-budget harness extracts
 `watch` / `publish` from `src/runtime/index.ts`, so it supplies their module constants and
 Status view inputs explicitly.
+
+Every WebView document (`runtime/src/{main,debug,network}.mjs`) first imports the vendored
+`src/runtime/platform-fallbacks.ts` (`AbortSignal.any`, Chrome 116; `URL.canParse`, Chrome 120),
+then Android's own `AbortSignal.timeout` fallback (`runtime/src/abort-signal-timeout.mjs`,
+Chrome 103; iOS needs none). The bundles target Chrome 100. Each fallback installs only where
+the API is missing; the individual fallback modules only export, so a document must import
+`platform-fallbacks.ts`, not them. `runtime/test/network-document.test.mjs` bundles the network
+document with all three deleted, reads through its guarded fetch and checks `URL.canParse`.
 
 The current runtime pins Flock 0.5.0, Streams Client 0.13.1, Streams CRDT
 0.21.1 and Loro 1.17.0, matching the root workspace and iOS decoder.
@@ -66,6 +82,9 @@ session module with a synthetic Streams peer.
 
 Roost reports a live session after both the control stream and owner history
 are ready. A failed read only clears its own reader's readiness until it recovers.
+The composer takes command readiness from the runtime projection. A readable
+Roost window and a caught-up control stream allow Stop, Steer and permission
+answers while the history subscription reconnects. Send also needs the history metadata.
 
 Roost proposal decisions write the outcome through the owner's shared
 `replaceTurn` command, as on Web. The Loro path continues to append the notice
@@ -239,8 +258,8 @@ both network gates permit read, create and append of `<workspace>:shortcut-index
 
 The bridge forwards `sessionPreview`, `iosSimulatorControl` and `androidEmulatorControl` to the
 snapshot unchanged, with the verified identity, and answers the runtime's `shareRequest`
-`previewToken` host call through native (`previewToken` event, `previewTokenReply`); other
-share-request operations stay unsupported. The network gates need no new streams: the preview calls
+`previewToken` host call through the native machine-proof broker
+(`machineToken` event, `machineTokenReply`). The network gates need no new streams: the preview calls
 use the existing machine RPC request and response streams. See [Remote previews](rules/previews.md).
 
 

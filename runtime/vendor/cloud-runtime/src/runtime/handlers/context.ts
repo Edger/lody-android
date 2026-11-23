@@ -14,6 +14,9 @@ import { sessionFileRootMounts } from '../../protocol/session-file-roots.ts';
 
 export type RuntimeChannel = ReturnType<typeof createChannel>;
 export type MetaReplica = { flock: Flock; client: StreamsClient };
+export type GrantProvider = (() => Promise<Grant>) & {
+  invalidate?: (failedToken?: string) => void;
+};
 
 export type RuntimeState = {
   workspace: string;
@@ -27,7 +30,7 @@ export type RuntimeState = {
   readonly catalogs: Map<string, Catalog>;
   readonly unhealthy: Set<string>;
   /** Live `${workspace}:wf:workspace` replica, written by Status view commands. */
-  workspaceReplica: MetaReplica | undefined;
+  workspaceReplica: (MetaReplica & { missing?: boolean }) | undefined;
   /** Last read `pinSection` rows; `loaded` is false until the first read. */
   pinSections: { sections: PinSection[]; loaded: boolean };
 };
@@ -35,7 +38,7 @@ export type RuntimeState = {
 export type RuntimeContext = {
   channel: RuntimeChannel;
   state: RuntimeState;
-  getGrant: () => Promise<Grant>;
+  getGrant: GrantProvider;
   broker: (operation: string, args: object) => Promise<unknown>;
   publish: () => void;
   publishSubscriptions: () => void;
@@ -52,6 +55,13 @@ export type RuntimeContext = {
   syncClock?: () => Promise<boolean>;
   /** The host is active; time-based Status view republishing runs only then. */
   setForeground?: (active: boolean) => void;
+  /** Drops a replica holding a commit its append never landed, and re-bootstraps it. */
+  discardReplica: (
+    replica: import('../status-view.ts').StatusViewDirtyReplica,
+    flock: Flock,
+  ) => void;
+  /** Restarts the live workspace settings read, keeping the current replica. */
+  refreshWorkspace: () => void;
   watch: (mode: string) => void;
   startPresence: () => void;
   stopPresence: () => void;
@@ -62,17 +72,25 @@ export function scopedWorkspaceGrant(
   { state, getGrant }: RuntimeContext,
   workspaceId: string,
   userId: string,
-) {
-  return async () => {
-    const check = () => {
-      if (state.workspace !== workspaceId || state.userId !== userId)
-        throw new Error('workspace_changed');
-    };
-    check();
-    const value = await getGrant();
-    check();
-    return value;
+): GrantProvider {
+  const check = () => {
+    if (state.workspace !== workspaceId || state.userId !== userId)
+      throw new Error('workspace_changed');
   };
+  return Object.assign(
+    async () => {
+      check();
+      const value = await getGrant();
+      check();
+      return value;
+    },
+    {
+      invalidate: (failedToken?: string) => {
+        if (state.workspace === workspaceId && state.userId === userId)
+          getGrant.invalidate?.(failedToken);
+      },
+    },
+  );
 }
 
 export function scopedShortcutCloud(

@@ -11,9 +11,11 @@ const workerOrigin =
  */
 export type ServerClock = {
   now(): number;
+  /** The calibrated `server - device` offset in ms; 0 until a sample succeeds. */
+  offset(): number;
   synced(): boolean;
   /** One calibration sample; resolves whether it was accepted. */
-  sync(signal?: AbortSignal): Promise<boolean>;
+  sync(signal?: AbortSignal, maxAgeMs?: number): Promise<boolean>;
 };
 
 export type ClockSources = {
@@ -26,15 +28,25 @@ const CLOCK_DISCONTINUITY_MS = 1_000;
 
 export function createServerClock(sources: ClockSources): ServerClock {
   let offset = 0;
-  let calibrated = false;
+  let lastSample: { wall: number; mono: number } | undefined;
   return {
     now: () => sources.wallNow() + offset,
-    synced: () => calibrated,
-    async sync(signal) {
+    offset: () => offset,
+    synced: () => lastSample !== undefined,
+    async sync(signal, maxAgeMs = 0) {
       try {
         signal?.throwIfAborted();
         const before = sources.wallNow();
         const elapsedBefore = sources.monotonicNow();
+        if (lastSample && maxAgeMs > 0) {
+          const age = elapsedBefore - lastSample.mono;
+          if (
+            age >= 0 &&
+            age < maxAgeMs &&
+            Math.abs(before - lastSample.wall - age) <= CLOCK_DISCONTINUITY_MS
+          )
+            return false;
+        }
         const serverTime = await sources.fetchServerTime(signal);
         const after = sources.wallNow();
         const elapsed = sources.monotonicNow() - elapsedBefore;
@@ -43,7 +55,7 @@ export function createServerClock(sources: ClockSources): ServerClock {
         if (Math.abs(after - before - elapsed) > CLOCK_DISCONTINUITY_MS)
           return false;
         offset = Math.round(serverTime - (before + after) / 2);
-        calibrated = true;
+        lastSample = { wall: after, mono: elapsedBefore + elapsed };
         return true;
       } catch {
         return false;

@@ -1,9 +1,9 @@
 {
   "source": "LodyAI/lody-ios packages/cloud-runtime",
-  "commit": "74e635c71367ef99018fee06c36dbc75c365a9db",
+  "commit": "643f0925e012cf15650a1a634b805ce4fd0b0daf",
   "license": "AGPL-3.0-only",
   "path": "packages/cloud-runtime",
-  "export": "git -C apps/mobile/ios archive 74e635c71367ef99018fee06c36dbc75c365a9db packages/cloud-runtime",
+  "export": "git -C apps/mobile/ios archive 643f0925e012cf15650a1a634b805ce4fd0b0daf packages/cloud-runtime",
   "note": "Complete snapshot of the pinned iOS cloud-runtime package, excluding Roost authoring source and its generator. SHA256.json records every mirrored file. Earlier entries retain the source-update history.",
   "roostHistory": {
     "files": [
@@ -16,6 +16,7 @@
       "scripts/build.mjs",
       "src/contract/methods.ts",
       "src/contract/sessions.ts",
+      "src/contract/sharing.ts",
       "src/runtime/archive-session.ts",
       "src/runtime/create-session.ts",
       "src/runtime/handlers/lifecycle.ts",
@@ -34,13 +35,11 @@
     "note": "The iOS asset build verifies the Roost browser module against the pinned source and shared input refactor. Android snapshots the generated module and licenses verbatim. The authoring source and generator stay in iOS.",
     "upstream": {
       "repository": "https://github.com/LodyAI/Lody",
-      "commit": "57750dd60f972c6c76510d0191cfc8cfb74afe52",
+      "commit": "5724451caeaca55035b6a44be065dbea407b8795",
       "sources": [
         "packages/components/src/lib/e2ee-local-data.ts",
         "packages/components/src/lib/encrypted-dispatch-outcome.ts",
-        "packages/components/src/lib/roost-history-cache.ts",
         "packages/components/src/lib/roost-history-error.ts",
-        "packages/components/src/lib/roost-session-bridge.ts",
         "packages/components/src/lib/session-accepted-inputs.ts",
         "packages/components/src/lib/session-input-storage.ts",
         "packages/components/src/lib/session-send-delivery.ts",
@@ -49,6 +48,7 @@
         "packages/shared/src/acp-authentication-limits.ts",
         "packages/shared/src/acp-config-option-sensitivity.ts",
         "packages/shared/src/acp-model-capabilities.ts",
+        "packages/shared/src/acp-model-config-options.ts",
         "packages/shared/src/acp-run-config.ts",
         "packages/shared/src/acp/claude-subagent-task.ts",
         "packages/shared/src/agent-brand.ts",
@@ -79,6 +79,7 @@
         "packages/shared/src/repo-doc-meta.ts",
         "packages/shared/src/rpc-secret.ts",
         "packages/shared/src/schema.ts",
+        "packages/shared/src/session-access.ts",
         "packages/shared/src/session-data/directory.ts",
         "packages/shared/src/session-data/domain.ts",
         "packages/shared/src/session-data/history-patches.ts",
@@ -102,6 +103,13 @@
           "packages/components/src/lib/workspace-accepted-inputs.ts",
           "packages/components/src/lib/session-send-delivery.ts",
           "packages/components/src/lib/session-send-resources.ts"
+        ]
+      },
+      "reader": {
+        "commit": "878e55f8c62133482fc906049d1564d312243b0e",
+        "sources": [
+          "packages/components/src/lib/roost-history-cache.ts",
+          "packages/components/src/lib/roost-session-bridge.ts"
         ]
       }
     }
@@ -238,6 +246,11 @@
     ],
     "note": "Mirrors the iOS DataRuntime CSP template: permit wss: alongside https: while retaining all other directives. Dependencies and licenses are unchanged."
   },
+  "roostCheckpointSubscription": {
+    "iosCommit": "239c0301071d04584b49938362a2c235544160d7",
+    "lodyCommit": "bc9044ecc8f59ff7b36fe649b30e11e220fcb232",
+    "note": "Shared Roost subscription and exact checkpoint recovery. Scoped history proofs are minted by the native host."
+  },
   "conversationContextUsage": {
     "repository": "LodyAI/lody-ios",
     "commit": "4117cc0561d17e7706dd9925b29b39746f5d8c6f",
@@ -319,5 +332,127 @@
       "src/runtime/handlers/schedules.ts"
     ],
     "note": "Arrives with the main pin: scheduleMachine no longer double-prefixes `machine-` before machineMeta, so schedules read the computer's name, owner, clock and protocol support again. Dependencies and licenses are unchanged."
+  },
+  "abortSignalAny": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "9b74201368a47f9ace793412b89c228eeb8072c2",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/135",
+    "files": [
+      "src/runtime/abort-signal-any.ts",
+      "src/runtime/index.ts",
+      "scripts/build.mjs"
+    ],
+    "note": "AbortSignal.any fallback for WebKit before 17.4 and Android System WebView before 116, imported first by the runtime entry. Since platformFallbacks (#136) it only exports and platform-fallbacks.ts installs it; Android documents import that module first. Android adds its own AbortSignal.timeout fallback (runtime/src/abort-signal-timeout.mjs) for WebView 100-102. Dependencies and licenses are unchanged."
+  },
+  "statusViewWokenStaysUnread": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "9b74201368a47f9ace793412b89c228eeb8072c2",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/135",
+    "files": [
+      "src/protocol/lody-shared/provenance.json",
+      "src/protocol/lody-shared/status-view/tiers.ts",
+      "src/protocol/lody-shared/status-view/layout.ts",
+      "src/protocol/lody-shared/status-view/command.ts",
+      "src/protocol/lody-shared/status-view/vectors/layout.json",
+      "src/protocol/lody-shared/status-view/vectors/commands.json"
+    ],
+    "note": "Re-vendored from Lody 6f27d1ba: placing or restoring a woken conversation keeps its expired snooze, so it stays unread until read (11 layout / 33 command vectors)."
+  },
+  "sessionRouteWait": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "c29b2d662a543ee46296b65048cfd432351860d8",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/134",
+    "files": [
+      "README.md",
+      "src/runtime/session-read.ts",
+      "src/runtime/session.ts"
+    ],
+    "note": "Session readers check in-memory routing metadata every 250 ms and emit waiting updates when the reason changes; network read failures keep exponential backoff. First mirrored by hand in lody-android #30 from the PR head c04277df (same content); recorded at the lody-ios main squash c29b2d66 and reached by the full 9b742013 export."
+  },
+  "platformFallbacks": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "58f898c7c9253f4cdc88239ec0ec604dfde4bd8d",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/136",
+    "files": [
+      "src/runtime/platform-fallbacks.ts",
+      "src/runtime/url-can-parse.ts",
+      "src/runtime/abort-signal-any.ts",
+      "src/runtime/index.ts"
+    ],
+    "note": "One entry, platform-fallbacks.ts, installs the AbortSignal.any and URL.canParse (Chrome 120) fallbacks where missing; the runtime entry imports it first, and abort-signal-any.ts / url-can-parse.ts now only export. Every Android WebView document (runtime/src/{main,debug,network}.mjs) imports platform-fallbacks.ts first, then Android's own AbortSignal.timeout fallback. Dependencies and licenses are unchanged."
+  },
+  "statusViewReviewFixes": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "2a5d25655e4492506df94de5a61386c83d2f8bd9",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/138",
+    "files": [
+      "README.md",
+      "src/protocol/lody-shared/pinned-sections.ts",
+      "src/protocol/lody-shared/provenance.json",
+      "src/protocol/lody-shared/status-view/command.ts",
+      "src/protocol/lody-shared/status-view/layout.ts",
+      "src/protocol/lody-shared/status-view/vectors/commands.json",
+      "src/protocol/lody-shared/status-view/vectors/layout.json",
+      "src/runtime/abort-signal-any.ts",
+      "src/runtime/handlers/context.ts",
+      "src/runtime/handlers/status-view.ts",
+      "src/runtime/index.ts",
+      "src/runtime/server-clock.ts",
+      "src/runtime/session.ts",
+      "src/runtime/sharing/session-share-concurrency.ts",
+      "src/runtime/status-view.ts"
+    ],
+    "note": "Line C review fixes with the shared modules re-vendored from Lody #3093: the first pin section creates the missing workspace settings stream; a failed append discards and re-bootstraps the replica instead of keeping an unsent commit; touchOnSend reaches Guide/Steer and edit-and-resend sends and resolves a Tab to its conversation; a teammate's local-project conversation is not manageable; canManageSections waits for the section rows; My tasks scopes per conversation and counts the Pinned rows it hid; conversation activity includes its Tabs (unread stays its own); a new clock calibration republishes the catalog so hosts learn the offset from nowMs. No contract shape changes. Dependencies and licenses are unchanged."
+  },
+  "steerDeliveryFix": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "512d209a058c41c31a4f4b4ab9ba69f771207c5e",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/157",
+    "files": [
+      "src/runtime/execution.ts",
+      "src/runtime/handlers/sessions.ts",
+      "src/runtime/session.ts"
+    ],
+    "note": "Mirrors the reviewed iOS steer delivery fix (#157, plus the existing-turn MCP empty-selection guard in session.ts from #156): avoid writing _lodyDeliveryKind='steer' onto user inputConfig / acpSessionConfig before session/steer confirms applied=true so daemon-requeued steers remain dispatchable; opt out of queue/inbox pausing (pauseInbox=false) when cancelling for interrupt-based steering on operationInbox machines and unpause stopped drafts with a fresh resend id; resolve activeAssistantTurn from only the latest assistant entry; stamp humanInputReceipts on Loro turns; and settle executionProjection delivery states. Dependencies, contract and licenses are unchanged."
+  },
+  "sessionConnectionRecovery": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "5e8da4b8096febd309dde2e2ff585b7b46075a7b",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/159",
+    "files": [
+      "src/runtime/handlers/lifecycle.ts",
+      "src/runtime/index.ts",
+      "src/runtime/session-read.ts",
+      "src/runtime/session.ts"
+    ],
+    "note": "Mirrors the reviewed iOS session connection recovery fix (#159): probe stream recovery without live long-poll when streamReady is false (and on catalog retries), keep streamReady true across healthy multi-page live bursts, rebase concurrent Roost history supersessions in place, invalidate cached Streams grants on unauthorized/forbidden session reads, and wake pending read-retry sleeps on foreground resume. Dependencies, contract and licenses are unchanged."
+  },
+  "pinSectionsWithMeta": {
+    "repository": "https://github.com/LodyAI/lody-ios",
+    "commit": "d6de3bff1d4102d1cb962ae476884dcdb38d1e73",
+    "pullRequest": "https://github.com/LodyAI/lody-ios/pull/162",
+    "files": 1,
+    "note": "start opens the workspace settings stream (pin sections) together with :meta instead of after the first catalog publish, so lists no longer show every conversation before their sections and order settle. Only this hunk is mirrored from the reviewed iOS commit; other unmirrored iOS changes stay out of the snapshot, and dependencies and licenses are unchanged."
+  },
+  "iosMainSync": {
+    "repository": "https://github.com/LodyAI/lody-ios",
+    "commit": "94787843802c0d6fe5912814792fb1e54b2f2ebc",
+    "export": "git -C apps/mobile/ios archive 94787843802c0d6fe5912814792fb1e54b2f2ebc packages/cloud-runtime",
+    "note": "Full package export at lody-ios main, catching up the unmirrored #141 (session-reported / commands first), #144 (server clock calibration reuse), #147/#149 (reference catalog failures scoped to the affected computer), #151 (promptShortcuts select and listed revision on mention items), #156 (MCP selection keeps an empty persisted selection, settings read retries with grant invalidation, 16 MiB window, synced-replica fallback) and the rest of #162. Dependencies and licenses are unchanged. Android adaptations outside the snapshot: shortcutBody uses select, the send hook expands /shortcut tokens and selects first-turn MCP defaults through a bridge grant request."
+  },
+  "roostPermissionReadiness": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "7e0fd36042d9ac196063523375101403e6d17657",
+    "files": [
+      "README.md",
+      "src/runtime/session.ts"
+    ],
+    "note": "Roost permission answers use command readiness, so they remain available on the installed transcript while the history subscription reconnects. The owner still rejects stale or answered requests. Dependencies and licenses are unchanged."
+  },
+  "roostCutoverMainSync": {
+    "repository": "LodyAI/lody-ios",
+    "commit": "643f0925e012cf15650a1a634b805ce4fd0b0daf",
+    "export": "git -C apps/mobile/ios archive 643f0925e012cf15650a1a634b805ce4fd0b0daf packages/cloud-runtime",
+    "note": "Full package export of the Roost cutover after it integrated lody-ios main (which contains the previous iosMainSync commit 9478784). Combines the cutover's owner subscription, scoped history proofs, command readiness and permission readiness with main's quote spans and MCP selection. Dependencies and licenses are unchanged."
   }
 }

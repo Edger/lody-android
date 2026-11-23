@@ -21,6 +21,9 @@ uses a 35-second poll budget. Uploads explicitly set `uploadTimeoutMs` because
 Streams Client 0.12+ otherwise defaults to 60 seconds, beyond native command
 budgets. An unconfirmed append remains an unknown outcome and is not replayed.
 
+An open session waiting for its history route checks the in-memory workspace
+metadata every 250 ms. Network read failures use exponential backoff.
+
 Run `pnpm --filter @lody/cloud-runtime typecheck`. Existing behavioral fixtures
 under `apps/ios/tests` now load these shared production sources, retaining
 protocol, write ordering, uncertain delivery and recovery checks.
@@ -28,24 +31,41 @@ protocol, write ordering, uncertain delivery and recovery checks.
 ## Roost sessions
 
 The Developer Mode / Roost History beta preference selects Roost for new sessions
-only when the owner advertises `sessionHistory` v3, using the pinned upstream
+only when the owner advertises `sessionHistory` v4, using the pinned upstream
 `resolveNewSessionHistoryBackend` policy. The preference is off by default;
 unsupported machines create Loro sessions. The resulting backend is written in
 session metadata and never changed by this preference. New Tabs use the same
 selection policy.
 
 The session's metadata selects its history backend. For Roost, the runtime waits
-for the owner and its `sessionHistory` v3 capability, and negotiates incremental
-reads, watches and patches separately. An existing nonempty Loro history can open
+for the owner and its `sessionHistory` v4 capability, and negotiates incremental
+reads, subscriptions and patches separately. An existing nonempty Loro history can open
 without metadata after control-stream catchup; an explicitly Roost session or a
 retired Roost cursor never takes that fallback. The pinned upstream Roost bridge
 and history cache read and observe history, capture sharing snapshots, and submit
 permission responses through the encrypted owner RPC. The control document
 carries the shared queue and human-input receipts.
 
+The owner publishes committed checkpoints over the reply stream for
+`session/history-subscribe`. The native runtime consumes that stream using
+Streams long-poll. The upstream reader applies inline deltas at their
+exact cached base and requests missing intervals from its last applied checkpoint.
+A renewed lease resumes from that same durable checkpoint. The runtime obtains
+scoped read and intent-bound write proofs through the native `historyToken`
+broker. Reads of the same session reuse a proof for up to 30 seconds and renew a
+reused proof once if the owner denies it. The owner checks current access on every
+read. Subscription leases and writes request their own proofs. The account
+credential stays native.
+
 Both the control stream and owner history must be ready before the runtime
 reports a Roost session as live. A failed read clears that reader's readiness
-until it recovers, while the other reader can continue.
+while the other reader continues. After a history subscription failure, live
+readiness requires a fresh owner checkpoint that the transcript has loaded.
+With the control stream caught up and a readable history window installed, Stop
+and Steer can target the known turn and permission requests can be answered
+while the subscription reconnects. Sending
+also requires the session's history metadata. These commands keep their existing
+owner checks. The host displays the sync status independently of command readiness.
 
 The iOS runtime package holds the authoring source in `vendor/upstream-roost`.
 The iOS asset build verifies the generated `src/runtime/upstream-roost.js` against
@@ -230,33 +250,51 @@ sections and the Focus / Later / Settled rows in the given order and never sort
 or classify them. Layout and rows arrive in one catalog event and restore with
 the catalog cache.
 
-`src/runtime/status-view.ts` builds the planner input the way the native lists
-group today: Tabs and side chats never list and lend their running / waiting
-state to their conversation (side chats and other machines excluded); rows nest
-under `openedBySessionId`, then `openedByRootSessionId`, resolved through Tabs;
-My tasks keeps whole families that contain the user's conversations and counts
-the pinned rows it hid. Working and waiting come from durable status
-(`status`, `awaitingUserSince`), not live presence. `canManage` ports the web
-`isSessionEditableToUser`: the machine's `ownerUserId` is the user, or its
-machine stream was readable (and, for a local project, lists that project).
-`canPrefer` also admits the session's author. Read grants on another member's
-machine are not discoverable here and are refused. `start({ workspaceReadOnly })`
-removes every status, pin and section action.
+`src/runtime/status-view.ts` builds the planner input as the desktop sidebar
+does. Tabs and side chats never list. A conversation's activity is the latest
+`lastMessageAt` (or creation time) of itself and its non-archived Tabs and side
+chats, on any machine, while its unread state stays its own. Same-machine Tabs,
+but not side chats, lend it their running / waiting state. Rows nest under
+`openedBySessionId`, then `openedByRootSessionId`, resolved through Tabs. My
+tasks lists each conversation the user owns (`session.userId`, desktop
+`isSessionInMyScope`), not whole families, and counts every Pinned-area row it
+hid (pinned roots and the rows they carry) under the pinned root's section.
+Working and waiting come from durable status (`status`, `awaitingUserSince`),
+not live presence. `canManage` ports the web `isSessionEditableToUser` with what
+the runtime knows: the machine's `ownerUserId` is the user, or its machine stream
+was readable and the conversation is not a local-project one (a Project group
+with a local member included). Whether a teammate's local project is shared is
+server access state the runtime cannot read, and a machine Flock lists private
+projects too, so those rows offer no status actions on native even when desktop
+does. `canPrefer` also admits the session's author. Read grants on another
+member's machine are not discoverable here and are refused.
+`start({ workspaceReadOnly })` removes every status, pin and section action, and
+section management waits until the section rows are known.
 
-The workspace Flock is read live beside `:meta` and `:mf:<id>`; its failures are
-diagnostics, never `syncError`, and keep the last sections. Time is the server
-clock: the `/api/time` round-trip midpoint (Lody `time-sync.ts`), recalibrated
-on start and foreground, the device clock until a sample succeeds. The runtime
-republishes at the layouts' `nextChangeAt` while the host is active and on
-every foreground.
+The workspace Flock is read live beside `:meta` and `:mf:<id>`. `start` opens it
+together with `:meta` rather than after the first catalog, so the small section
+stream is usually ready before the full conversation list publishes and pinned
+sections do not appear after the rows. Its failures are
+diagnostics, never `syncError`, and keep the last sections. A workspace without
+that stream has no sections; the first section write creates the stream, as Agent
+Role saves do, and the read restarts at once. Time is the server clock: the
+`/api/time` round-trip midpoint (Lody `time-sync.ts`), using the device clock until a sample succeeds. A foreground return reuses a
+calibration younger than a minute if wall and monotonic elapsed time still agree. The runtime republishes at
+the layouts' `nextChangeAt` while the host is active, on every foreground, and
+whenever a calibration changes the offset, since hosts learn it from `nowMs`.
 
 `statusViewCommand({ workspaceId, command, scope? })` plans against the current
 replicas (`scope` names the list a `move` happened in, default `team`) and
 writes session fields to the meta Flock and sections to the workspace Flock,
-one append each; it returns `{ writes }`, 0 when the planner refused.
-`snoozePresets()` resolves the four presets on the server clock. Sending a turn
-clears Later / Settled in the dispatch append (`touchOnSend`), and a new
-top-level conversation gets the top Focus `orderKey` (`newSessionOrder`).
+one append each; it returns `{ writes }`, 0 when the planner refused. A write
+commits to the live replica before its append, so a failed append (this or a
+dispatch pointer) discards that replica and bootstraps it again: the unsent
+commit is neither shown nor replayed. `snoozePresets()` resolves the four presets
+on the server clock. Every send clears Later / Settled on the conversation it
+belongs to (a Tab or side chat resolves to its conversation, `touchOnSend`): a
+dispatch in its pointer append, Loro or Roost, and a guide or an accepted edit
+and resend in an append of its own. A new top-level conversation gets the top
+Focus `orderKey` (`newSessionOrder`).
 `contract/fixtures/catalog-status-view.json` is a decoded catalog with both.
 
 ## Catalog recovery
