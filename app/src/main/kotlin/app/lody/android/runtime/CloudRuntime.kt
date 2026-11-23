@@ -373,7 +373,7 @@ sealed interface RoleSend {
     data object None : RoleSend
     data class Role(val id: String) : RoleSend
 }
-data class MessageAttachment(val name: String, val image: Boolean)
+data class MessageAttachment(val name: String, val image: Boolean, val turnImage: TurnImage? = null)
 /**
  * The latest user turn's run config (runtime session `composer`), what the next turn would use.
  * [roleKnown] is false when the turn says nothing about a Role; then [agentRoleId] null is

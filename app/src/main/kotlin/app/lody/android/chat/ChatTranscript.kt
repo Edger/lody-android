@@ -53,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import app.lody.android.runtime.TurnItem
@@ -408,6 +409,9 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
     var overflowing by remember(entry.text) { mutableStateOf(false) }
     var bubbleLayout by remember(entry.text) { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
     var menu by remember(entry.id) { mutableStateOf(false) }
+    // Pictures the server can address render as tiles; the viewer pages through them.
+    val images = entry.attachments.mapNotNull { it.turnImage }
+    var imageViewer by rememberSaveable(entry.id) { mutableStateOf<Int?>(null) }
     val clipboard = LocalClipboardManager.current
     Row(
         modifier = Modifier
@@ -438,7 +442,8 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
                     Text(stringResource(R.string.chat_forget_action), style = LodyTheme.typography.footnote)
                 }
             }
-            // Attachments sit above the bubble, trailing-aligned, one chip each (name + kind glyph).
+            // Attachments sit above the bubble, trailing-aligned: a picture tile when its bytes
+            // are addressable, otherwise a name + kind chip.
             if (entry.attachments.isNotEmpty()) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
@@ -446,7 +451,15 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
                     horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs, Alignment.End),
                     verticalArrangement = Arrangement.spacedBy(LodySpacing.xs),
                 ) {
-                    entry.attachments.forEach { AttachmentChip(it.name, it.image) }
+                    var pictureIndex = 0
+                    entry.attachments.forEach { attachment ->
+                        val picture = attachment.turnImage
+                        if (picture == null) AttachmentChip(attachment.name, attachment.image)
+                        else {
+                            val index = pictureIndex++
+                            AttachmentImageTile(picture, onClick = { imageViewer = index })
+                        }
+                    }
                 }
             }
             if (entry.text.isNotBlank()) Text(
@@ -489,6 +502,9 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
         }
         // Beside the bubble's top: past the header line and the gap under it.
         Avatar(entry.who.image, entry.who.name, UserAvatarSize, Modifier.padding(top = UserHeaderHeight + LodySpacing.xs))
+    }
+    imageViewer?.takeIf { it in images.indices }?.let { start ->
+        ImageViewer(images, start) { imageViewer = null }
     }
 }
 
