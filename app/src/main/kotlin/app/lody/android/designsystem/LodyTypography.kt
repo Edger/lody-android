@@ -60,6 +60,9 @@ class LodyTypography(
     /** Diffs, inline code in dense rows. */
     val codeSmall: TextStyle,
 ) {
+    /** Caption without the medium weight, as iOS's regular secondary label. */
+    val captionRegular: TextStyle get() = caption.copy(fontWeight = FontWeight.Normal)
+
     fun entries(): List<Pair<String, TextStyle>> = listOf(
         "display" to display,
         "largeTitle" to largeTitle,
