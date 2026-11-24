@@ -142,7 +142,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -483,7 +482,7 @@ fun ChatListScreen(
                 pinsLabels = false, onOpenChat = onOpenChat,
                 onSetArchived = setArchived,
                 archivedList = archived && tab == HomeTab.Chats,
-                owners = state.members.takeIf { homeScope == HomeScope.Team },
+                owners = state.members.takeIf { it.isNotEmpty() },
             )
             // A project header already names the project, so rows drop it from their detail line.
             tab == HomeTab.Chats -> HomeList(
@@ -494,7 +493,7 @@ fun ChatListScreen(
                 empty = if (archived && state.snapshot != null) stringResource(R.string.home_archived_empty) else state.placeholder,
                 listState = chatsListState,
                 projectIndex = !archived && grouping == HomeGrouping.Project,
-                owners = state.members.takeIf { homeScope == HomeScope.Team },
+                owners = state.members.takeIf { it.isNotEmpty() },
                 settledExpanded = settledExpanded,
                 onToggleSettled = { settledExpanded = !settledExpanded },
                 onOpenChat = onOpenChat,
@@ -1306,16 +1305,17 @@ private fun FamilyRows(
     onOpenChat: (ChatItem) -> Unit,
 ) {
     val rowDetails = { chat: ChatItem -> if (section.header is HomeSection.Header.Project && chat.nestedUnder == null) details - ChatRowDetail.Project else details }
-    val owner = { chat: ChatItem -> owners?.let { it[chat.ownerId] ?: WorkspaceMember(chat.ownerId.orEmpty(), "") } }
+    // An owner missing from the member cache keeps its trailing space empty instead of a "?" avatar.
+    val owner = { chat: ChatItem -> owners?.get(chat.ownerId) }
     val labels = RowLabels.current()
     val move = { command: app.lody.android.runtime.StatusViewCommand? -> command?.let { status?.run?.invoke(it) {} }; Unit }
     val rootActions = rowActions(root, section, sections, status, onSetArchived, archivedList, labels)
     val up = status?.let { StatusMoves.by(section, root, -1) }
     val down = status?.let { StatusMoves.by(section, root, 1) }
     val expanded = root.treeParent && root.id !in folded
-    val collapseLabel = stringResource(R.string.home_tree_collapse)
+    val foldLabel = stringResource(if (expanded) R.string.home_tree_collapse else R.string.home_tree_expand)
     val semantics = buildList {
-        if (expanded) add(CustomAccessibilityAction(collapseLabel) { toggleOpener(root.id); true })
+        if (root.treeParent) add(CustomAccessibilityAction(foldLabel) { toggleOpener(root.id); true })
         if (up != null) add(CustomAccessibilityAction(labels.moveUp) { move(up); true })
         if (down != null) add(CustomAccessibilityAction(labels.moveDown) { move(down); true })
         if (rootActions.hasMenu) add(CustomAccessibilityAction(labels.actions) { onMenu(true); true })
@@ -1335,20 +1335,18 @@ private fun FamilyRows(
             ) { onOpenChat(root) }
         }
         // Opened children move with their opener (no drag or Move up / down) but take every other action.
-        // Expanded, the count line gives way to them and the first child carries the collapse chevron.
+        // The opener's chevron folds the family; the trunk runs down from it through these rows.
         AnimatedVisibility(expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
             Column {
-                kids.forEachIndexed { index, kid ->
+                kids.forEach { kid ->
                     var kidMenu by remember { mutableStateOf(false) }
                     val kidActions = rowActions(kid, section, sections, status, onSetArchived, archivedList, labels)
-                    val collapse: (() -> Unit)? = if (index == 0) { { toggleOpener(root.id) } } else null
                     val kidSemantics = buildList {
-                        if (collapse != null) add(CustomAccessibilityAction(collapseLabel) { collapse(); true })
                         if (kidActions.hasMenu) add(CustomAccessibilityAction(labels.actions) { kidMenu = true; true })
                     }
                     SwipeActions(kidActions.leading.takeIf { !dragging }, kidActions.trailing.takeIf { !dragging }.orEmpty()) {
                         ChatRow(
-                            kid, rowDetails(kid), now, owner(kid), collapseFamily = collapse,
+                            kid, rowDetails(kid), now, owner(kid),
                             menuOpen = kidMenu, onMenu = if (kidActions.hasMenu) { open: Boolean -> kidMenu = open } else null,
                             actions = kidSemantics,
                             menu = { close -> RowMenu(section, kid, kidActions, sections, status, archivedList, close) },
@@ -1781,13 +1779,13 @@ internal fun SectionTitle(
 }
 
 /**
- * Line 1: status slot, title, age. Line 2 (only when an enabled detail has a value): repo or folder
- * mark + project, branch, and the PR mark trailing. iOS counterpart: `ChatRowContent`.
+ * One row, on one line by default: a tree gutter, the title, then the trailing marks in F's order
+ * (status, PR or age, avatar). iOS counterpart: `ChatRowContent`.
  *
- * [expanded] is set on a row with nested chats: whether they are shown. While folded, a "› 4 opened
- * chats" line below the row stands for the family; expanded, it gives way to the children and
- * [collapseFamily] (the first child's leading chevron) folds them again. Nested rows read one size
- * down and have rounded branches.
+ * [expanded] is set on a row with nested chats: whether they are shown. The fold target sits on
+ * this row, overlapping the 16 dp gutter, and the trunk runs from its chevron down through the
+ * children. Folded, the row's trailing end carries the most urgent child status. Nested rows step
+ * in one level and curve into the trunk.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1798,7 +1796,6 @@ private fun ChatRow(
     owner: WorkspaceMember? = null,
     expanded: Boolean? = null,
     onToggle: () -> Unit = {},
-    collapseFamily: (() -> Unit)? = null,
     /** The long-press action menu: open state, its toggle (null: no menu) and its items. */
     menuOpen: Boolean = false,
     onMenu: ((Boolean) -> Unit)? = null,
@@ -1814,33 +1811,29 @@ private fun ChatRow(
     val place = chat.place.takeIf { ChatRowDetail.Project in details && it.isNotEmpty() }
     val branch = chat.branch.takeIf { ChatRowDetail.Branch in details && it.isNotEmpty() }
     val pr = chat.prStatus.takeIf { ChatRowDetail.PullRequest in details && it in PrStatuses }
-    // A PR mark alone stays on the title line, before the age; it is always the trailing mark of its line.
     val twoLine = place != null || branch != null
     val nested = chat.nestedUnder != null
     val rail = colors.borderDefault
     var titleHeight by remember { mutableFloatStateOf(0f) }
-    val first = collapseFamily != null
     Column(
         modifier
             .fillMaxWidth()
             // A little air between an expanded family and the next conversation; children stay tight.
             .padding(bottom = if (nested && chat.lastChild) LodySpacing.sm else 0.dp)
             .drawBehind {
-                if (nested) {
-                    val turn = if (twoLine) LodySpacing.sm.toPx() + titleHeight / 2 else size.height / 2
-                    if (first) drawTrunkBelowChevron(rail, chat.lastChild, turn) else drawRail(rail, chat.lastChild, turn)
-                }
+                val turn = if (twoLine) LodySpacing.sm.toPx() + titleHeight / 2 else size.height / 2
+                if (nested) drawRail(rail, chat.lastChild, turn) else if (expanded == true) drawFamilyTrunk(rail, turn)
             },
     ) {
         // A popup: it takes no space in the column and anchors to this row.
         if (onMenu != null) DropdownMenu(expanded = menuOpen, onDismissRequest = { onMenu(false) }, containerColor = colors.bgOverlay) {
             menu { onMenu(false) }
         }
-        Box(if (first) Modifier.height(IntrinsicSize.Min) else Modifier) {
+        Box(if (expanded != null) Modifier.height(IntrinsicSize.Min) else Modifier) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = if (nested) LodySize.controlMd else LodySize.listRow)
+                    .heightIn(min = LodySize.listRow)
                     .then(press?.let { handle -> Modifier.clickable(onClick = onClick).then(handle()) }
                         ?: Modifier.combinedClickable(onClick = onClick, onLongClick = onMenu?.let { { it(true) } }))
                     .then(if (actions.isNotEmpty()) Modifier.semantics { customActions = actions } else Modifier)
@@ -1848,7 +1841,8 @@ private fun ChatRow(
                     .padding(vertical = if (twoLine) LodySpacing.sm else 0.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (nested) Spacer(Modifier.width(TreeLevel))
+                // Every root row keeps the 16 dp column so titles hold the same edge; children step in 16 more.
+                Spacer(Modifier.width(if (nested) TreeLevel else TreeRootGutter))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LodySpacing.xxs)) {
                     Row(Modifier.onSizeChanged { titleHeight = it.height.toFloat() }, verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -1864,9 +1858,15 @@ private fun ChatRow(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
-                        if (chat.attention != null) {
-                            Box(Modifier.padding(start = LodySpacing.sm).size(LodyIconSize.md), contentAlignment = Alignment.Center) { AttentionGlyph(chat.attention) }
+                        // Folded, only the hidden children's most urgent status stays on the opener.
+                        if (expanded == false) chat.childAttention?.let { child ->
+                            Box(Modifier.padding(start = LodySpacing.sm).size(LodyIconSize.sm), contentAlignment = Alignment.Center) { AttentionGlyph(child) }
                         }
+                        if (chat.attention != null) {
+                            Box(Modifier.padding(start = LodySpacing.sm).size(LodyIconSize.sm), contentAlignment = Alignment.Center) { AttentionGlyph(chat.attention) }
+                        }
+                        // On the title line the PR mark appears only when no detail line carries it;
+                        // a status mark takes the spot the age would use, as on iOS.
                         if (chat.attention == null && pr != null && !twoLine) PullRequestMark(pr, chat.prCi, Modifier.padding(start = LodySpacing.sm))
                         val wakes = chat.snoozedUntil?.takeIf { chat.tier == app.lody.android.runtime.StatusTier.Later && it > now }
                         if (wakes != null) {
@@ -1886,13 +1886,11 @@ private fun ChatRow(
                                 style = type.footnote.copy(fontFeatureSettings = "tnum"),
                                 color = colors.textTertiary,
                                 maxLines = 1,
-                                textAlign = TextAlign.End,
-                                modifier = Modifier.padding(start = if (pr != null && !twoLine) LodySpacing.xs else LodySpacing.sm),
+                                modifier = Modifier.padding(start = LodySpacing.sm),
                             )
                         }
                         if (owner != null) {
-                            Spacer(Modifier.width(LodySpacing.sm))
-                            Avatar(owner.image, owner.name.ifBlank { "?" }, LodyIconSize.md)
+                            Avatar(owner.image, owner.name.ifBlank { "?" }, LodySize.avatarSm, Modifier.padding(start = LodySpacing.sm))
                         }
                     }
                     if (twoLine) {
@@ -1914,36 +1912,47 @@ private fun ChatRow(
                     }
                 }
             }
-            if (collapseFamily != null) {
-                // The first child's leading gutter folds the family; its chevron sits on the trunk, level with the title.
-                val chevronTop = with(LocalDensity.current) { (LodySpacing.sm.toPx() + titleHeight / 2).toDp() } - FamilyChevron / 2
+            if (expanded != null) {
+                // The fold target is 32 dp wide, borrowing all 16 dp of the screen margin, so its
+                // 16 dp chevron centres on the trunk at x = 20 and the target ends where the title starts.
+                val label = stringResource(if (expanded) R.string.home_tree_collapse else R.string.home_tree_expand)
+                val glyphX = RailX - TreeChevron / 2 - (LodyLayout.screenPaddingX - TreeFoldBorrow)
+                val chevronTop = with(LocalDensity.current) { (LodySpacing.sm.toPx() + titleHeight / 2).toDp() } - TreeChevron / 2
                 Box(
                     Modifier
+                        .padding(start = LodyLayout.screenPaddingX - TreeFoldBorrow)
                         .fillMaxHeight()
-                        .width(LodyLayout.childIndent)
-                        .clickable(onClick = collapseFamily)
-                        .clearAndSetSemantics {},
+                        .width(TreeFoldWidth)
+                        // The pressed highlight is a rounded control, not a full-height block.
+                        .clip(RoundedCornerShape(LodyRadius.md))
+                        .clickable(role = Role.Button, onClick = onToggle)
+                        .clearAndSetSemantics { contentDescription = label; role = Role.Button; onClick(label) { onToggle(); true } },
                     contentAlignment = if (twoLine) Alignment.TopStart else Alignment.CenterStart,
                 ) {
                     Glyph(
-                        LodyIcons.Forward, colors.iconSecondary, FamilyChevron,
-                        Modifier.padding(start = LodyLayout.screenPaddingX).offset(y = if (twoLine) chevronTop else 0.dp).rotate(90f),
+                        LodyIcons.Forward, colors.iconSecondary, TreeChevron,
+                        Modifier.padding(start = glyphX).offset(y = if (twoLine) chevronTop else 0.dp)
+                            .rotate(if (expanded) 90f else 0f),
                     )
                 }
-            }
-        }
-        if (expanded != null) {
-            AnimatedVisibility(!expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                FamilyToggle(chat.childCount, chat.childAttention, onToggle)
             }
         }
     }
 }
 
-/** The family chevron sits at the opener's title edge; the rail runs down its centre (iOS `ChatRowContent`). */
+/**
+ * F's tree geometry. A root row keeps a 16 dp column so its title starts at 32 dp; a child steps
+ * in one more level (title at 48). The fold target is 32 dp wide, borrowing all 16 dp of the
+ * screen margin, and centres its 16 dp chevron on the rail at x = 20 so it stops where the title
+ * starts.
+ */
 private val FamilyChevron = LodyIconSize.xs
+private val TreeChevron = LodyIconSize.sm
 private val RailWidth = LodySpacing.xxs / 2
-private val RailX = LodyLayout.screenPaddingX + FamilyChevron / 2
+private val TreeRootGutter = LodySpacing.lg
+private val TreeFoldWidth = LodySpacing.xxxl
+private val TreeFoldBorrow = LodySpacing.lg
+private val RailX = LodyLayout.screenPaddingX + LodySpacing.xs
 
 /** One nesting level: how far a nested row's title steps in (iOS `ChatRowContent.childLevel`). */
 private val TreeLevel = LodyLayout.childIndent - LodyLayout.screenPaddingX
@@ -1968,56 +1977,11 @@ private fun DrawScope.drawRail(color: Color, last: Boolean, turn: Float) {
     drawPath(path, color, style = Stroke(width = RailWidth.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
 }
 
-/** The first child's trunk: it starts below the collapse chevron and continues only when more children follow. */
-private fun DrawScope.drawTrunkBelowChevron(color: Color, last: Boolean, turn: Float) {
-    if (last) return
+/** The opener's trunk: it starts under the fold chevron and runs to the first child's row. */
+private fun DrawScope.drawFamilyTrunk(color: Color, turn: Float) {
     val trunk = RailX.toPx()
-    drawLine(color, Offset(trunk, turn + FamilyChevron.toPx() / 2 + LodySpacing.xs.toPx()), Offset(trunk, size.height),
+    drawLine(color, Offset(trunk, turn + TreeChevron.toPx() / 2), Offset(trunk, size.height),
         strokeWidth = RailWidth.toPx(), cap = StrokeCap.Round)
-}
-
-/**
- * A folded family's line under the opener (Slack's "7 replies"): chevron + "7 opened chats",
- * aligned with the opener's title. The whole line expands the family and announces its count and
- * folded state; the separate opener row opens the conversation. Expanded, the line hides and the
- * first child's chevron folds the family again.
- */
-@Composable
-private fun FamilyToggle(count: Int, childAttention: ChatAttention?, onToggle: () -> Unit) {
-    val colors = LodyTheme.colors
-    val action = stringResource(R.string.home_tree_expand)
-    val label = pluralStringResource(R.plurals.home_tree_count, count, count)
-    val description = label + ", " + stringResource(R.string.home_tree_collapsed)
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(min = LodySize.controlSm)
-            .clickable(role = Role.Button, onClickLabel = action, onClick = onToggle)
-            .clearAndSetSemantics { contentDescription = description; role = Role.Button; onClick(action) { onToggle(); true } },
-    ) {
-        Row(
-            Modifier
-                .padding(start = LodyLayout.screenPaddingX - LodySpacing.xs)
-                .heightIn(min = LodySize.controlSm)
-                .clip(RoundedCornerShape(LodyRadius.sm))
-                .padding(start = LodySpacing.xs, end = LodySpacing.md),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
-        ) {
-            Glyph(LodyIcons.Forward, colors.iconSecondary, FamilyChevron)
-            Text(
-                label,
-                style = LodyTheme.typography.footnote.copy(fontFeatureSettings = "tnum"),
-                color = colors.textSecondary,
-                maxLines = 1,
-            )
-        }
-        if (childAttention != null) {
-            Box(Modifier.align(Alignment.CenterEnd).padding(end = LodyLayout.screenPaddingX).size(LodyIconSize.md), contentAlignment = Alignment.Center) {
-                AttentionGlyph(childAttention)
-            }
-        }
-    }
 }
 
 private val PrStatuses = setOf("open", "merged", "closed", "draft")
