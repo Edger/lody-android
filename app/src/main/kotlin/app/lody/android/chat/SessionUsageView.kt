@@ -1,13 +1,26 @@
 package app.lody.android.chat
 
 import android.text.format.DateUtils
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import app.lody.android.R
 import app.lody.android.designsystem.*
@@ -22,15 +35,37 @@ internal fun SessionUsageButton(usage: SessionUsage?) {
     if (usage == null || !usage.visible) return
     var open by remember { mutableStateOf(false) }
     val colors = LodyTheme.colors
+    val percent = (usage.triggerPercent ?: 0.0).takeIf { it.isFinite() } ?: 0.0
     val label = if (usage.compacting) stringResource(R.string.usage_compacting)
-        else stringResource(R.string.usage_open, (usage.triggerPercent ?: 0.0).roundToInt())
+        else stringResource(R.string.usage_open, percent.roundToInt())
     Box {
-        TextButton(onClick = { open = true }, modifier = Modifier.semantics { contentDescription = label }) {
-            if (usage.compacting) CircularProgressIndicator(Modifier.size(LodyIconSize.sm), color = colors.textSecondary)
-            else {
-                CircularProgressIndicator(progress = { ((usage.triggerPercent ?: 0.0) / 100).toFloat() },
-                    modifier = Modifier.size(LodyIconSize.sm), color = colors.textSecondary, trackColor = colors.fillSecondary)
-                Text("${usage.triggerPercent!!.roundToInt()}%", style = LodyTheme.typography.caption, color = colors.textSecondary)
+        // Content-sized with iOS's 2 pt leading inset, so the ring sits close to the agent mark;
+        // the trailing room keeps the existing gap to Send.
+        Row(
+            modifier = Modifier
+                .heightIn(min = LodySize.controlMd)
+                .clip(RoundedCornerShape(LodyRadius.md))
+                .clickable(role = Role.Button) { open = true }
+                .semantics { contentDescription = label }
+                .padding(start = LodySpacing.xxs, end = LodySpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Compacting keeps the ring and percentage's width, as iOS reserves usageWidth, and
+            // swaps only what is drawn for a spinner.
+            Box(contentAlignment = Alignment.Center) {
+                Row(
+                    modifier = if (usage.compacting) Modifier.clearAndSetSemantics {} else Modifier,
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs),
+                ) {
+                    UsageRing((percent / 100).toFloat(), Modifier.alpha(if (usage.compacting) 0f else 1f))
+                    Text(
+                        stringResource(R.string.usage_percent, percent.roundToInt()),
+                        style = LodyTheme.typography.captionRegular, color = colors.textTertiary,
+                        modifier = Modifier.alpha(if (usage.compacting) 0f else 1f),
+                    )
+                }
+                if (usage.compacting) CircularProgressIndicator(Modifier.size(LodyIconSize.sm), color = colors.textTertiary, strokeWidth = LodyStroke.focus)
             }
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
@@ -46,6 +81,31 @@ internal fun SessionUsageButton(usage: SessionUsage?) {
                     UsageQuotaView(quota)
                 }
             }
+        }
+    }
+}
+
+/** iOS's ChatUsageRing: one continuous track with the round-capped arc drawn over it, so the ring has no break at the arc's ends. */
+@Composable
+private fun UsageRing(percent: Float, modifier: Modifier = Modifier) {
+    val colors = LodyTheme.colors
+    Canvas(
+        modifier.size(LodyIconSize.sm).semantics {
+            progressBarRangeInfo = ProgressBarRangeInfo(percent.coerceIn(0f, 1f), 0f..1f)
+        },
+    ) {
+        val stroke = Stroke(width = LodyStroke.focus.toPx(), cap = StrokeCap.Round)
+        val inset = stroke.width / 2f
+        // iOS draws the ring as a template tinted by the button's secondaryLabel foreground: the
+        // track is that ink at 20%, the arc is the ink itself.
+        drawCircle(color = colors.textTertiary.copy(alpha = 0.2f), radius = size.minDimension / 2f - inset, style = stroke)
+        if (percent > 0f) {
+            drawArc(
+                color = colors.textTertiary, startAngle = -90f,
+                sweepAngle = 360f * percent.coerceIn(0f, 1f), useCenter = false,
+                topLeft = Offset(inset, inset), size = Size(size.width - stroke.width, size.height - stroke.width),
+                style = stroke,
+            )
         }
     }
 }
