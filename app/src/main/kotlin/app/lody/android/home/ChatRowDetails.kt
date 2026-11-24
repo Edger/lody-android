@@ -76,7 +76,8 @@ object CollapsedGroups {
 object ChatRowDetails {
     private const val FILE = "home"
     private const val KEY = "chatRowDetails"
-    val defaults = setOf(ChatRowDetail.Project, ChatRowDetail.PullRequest)
+    /** Rows start on one line; the second line appears only when someone opts into project / branch. */
+    val defaults = setOf(ChatRowDetail.PullRequest)
 
     fun load(context: Context): Set<ChatRowDetail> {
         val stored = context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getStringSet(KEY, null) ?: return defaults
