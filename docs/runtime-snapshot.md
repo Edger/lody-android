@@ -17,6 +17,33 @@ For an intentional update:
 3. Replace the snapshot only after reviewing the diff; update PROVENANCE and SHA256 together. Generate hashes with the exported `hashes()` function in `runtime/snapshot.mjs`, directed at the reviewed source directory. No build regenerates the manifest automatically.
 4. Run snapshot verification, `npm ci`, JS tests, asset build, JVM and Android bridge tests. Update `runtime/contract/fixtures.json` only for an intentional contract change. Capture actual WebView/WASM results and verify release assets contain no diagnostics.
 
+Roost subscriptions use the shared owner's durable checkpoints over the existing
+RPC streams. The Android bridge accepts the scoped `historyToken` call and
+returns only the history proof minted by native for that workspace. The mirrored
+reader applies an exact-base delta or recovers from the persisted checkpoint.
+
+The Status view runtime (lody-ios `status-view-runtime`, see PROVENANCE `statusView`)
+vendors the shared Lody layout, planner and golden vectors under
+`src/protocol/lody-shared`; `runtime/test/status-view.test.mjs` runs every vector against
+those copies. `runtime/contract/fixtures.json` `catalogStatusView` is the snapshot's
+synthetic `catalog-status-view.json`, the Kotlin golden catalog; a test keeps them equal.
+Since that refresh the snapshot also presents `message_quote` spans in history and accepts
+`quotes` on sends; Android keeps its own quote adapter in `runtime/src` and strips `quotes`
+before the shared send, so quotes are written once. Android's send hook (`runtime/src/network.mjs`) also does what the shared `sendTurn` handler adds
+around `sendTurn`: `/shortcut:<slug>` tokens expand before references, and a conversation's first
+turn selects the workspace's default MCP servers (`sessionMcpSelection`, with a Streams grant asked
+of native through `contractBridge.requestGrant`); later turns keep their persisted selection. The catalog-budget harness extracts
+`watch` / `publish` from `src/runtime/index.ts`, so it supplies their module constants and
+Status view inputs explicitly.
+
+Every WebView document (`runtime/src/{main,debug,network}.mjs`) first imports the vendored
+`src/runtime/platform-fallbacks.ts` (`AbortSignal.any`, Chrome 116; `URL.canParse`, Chrome 120),
+then Android's own `AbortSignal.timeout` fallback (`runtime/src/abort-signal-timeout.mjs`,
+Chrome 103; iOS needs none). The bundles target Chrome 100. Each fallback installs only where
+the API is missing; the individual fallback modules only export, so a document must import
+`platform-fallbacks.ts`, not them. `runtime/test/network-document.test.mjs` bundles the network
+document with all three deleted, reads through its guarded fetch and checks `URL.canParse`.
+
 The current runtime pins Flock 0.5.0, Streams Client 0.13.1, Streams CRDT
 0.21.1 and Loro 1.17.0, matching the root workspace and iOS decoder.
 Control requests and durable uploads each retain a 15-second budget, with
@@ -55,6 +82,9 @@ session module with a synthetic Streams peer.
 
 Roost reports a live session after both the control stream and owner history
 are ready. A failed read only clears its own reader's readiness until it recovers.
+The composer takes command readiness from the runtime projection. A readable
+Roost window and a caught-up control stream allow Stop, Steer and permission
+answers while the history subscription reconnects. Send also needs the history metadata.
 
 Roost proposal decisions write the outcome through the owner's shared
 `replaceTurn` command, as on Web. The Loro path continues to append the notice
@@ -112,6 +142,12 @@ accepts `includeOffline`, which skips the online filter for schedule targets (ne
 online-only agents), and `schedules` derives `ownedMachineIds` and clocks from workspace
 metadata as well as synced machine streams. The transcript windowing hunks in `project.ts` and
 `session.ts` remain outside the snapshot.
+
+Workspace and file diff reads accept the machine's `branch` / `uncommitted`
+comparison (`scope`); omitting it keeps the machine default. The vendored
+contract carries `DiffScope` and the optional field on both parameter objects.
+Mirrored from iOS `a4960c9`; the snapshot keeps its existing composer
+context-usage mirror, and that iOS commit's preview contract additions stay out.
 
 ## Catalog read recovery
 
@@ -222,8 +258,8 @@ both network gates permit read, create and append of `<workspace>:shortcut-index
 
 The bridge forwards `sessionPreview`, `iosSimulatorControl` and `androidEmulatorControl` to the
 snapshot unchanged, with the verified identity, and answers the runtime's `shareRequest`
-`previewToken` host call through native (`previewToken` event, `previewTokenReply`); other
-share-request operations stay unsupported. The network gates need no new streams: the preview calls
+`previewToken` host call through the native machine-proof broker
+(`machineToken` event, `machineTokenReply`). The network gates need no new streams: the preview calls
 use the existing machine RPC request and response streams. See [Remote previews](rules/previews.md).
 
 
@@ -241,3 +277,13 @@ The trusted NetworkRuntime permits only the validated grant HTTPS origin and its
 matching WSS origin. The offline runtime keeps `connect-src none`. The mirrored
 iOS DataRuntime template permits `https:` and `wss:` while retaining its other CSP
 directives. This permission does not enable the Streams WebSocket transport.
+
+The snapshot at `9f9483cc` ([lody-ios#123](https://github.com/LodyAI/lody-ios/pull/123)) sends
+`readFile`, `fileDiff` and `turnDiff` for a path under a Project group member used in place
+(`additional` / `link`) with that member's `rootId` and a member-relative path, as web
+`toSessionFileRequestPath` does, so such conversation links no longer read the main root and
+report the file outside the project.
+
+The snapshot at `84e41933` ([lody-ios#124](https://github.com/LodyAI/lody-ios/pull/124)) carries a tool call's `activityKind` (`context_compaction` /
+`codex_retry`, web `isProcessStatusToolCall`) in its transcript summary, so the conversation
+shows context compaction as its own status row instead of an ordinary tool step.

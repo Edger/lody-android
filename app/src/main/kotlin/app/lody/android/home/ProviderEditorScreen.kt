@@ -1,8 +1,9 @@
 package app.lody.android.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -10,34 +11,35 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import app.lody.android.R
+import app.lody.android.create.PickerOption
+import app.lody.android.create.RUN_CONFIG_ON
+import app.lody.android.create.RunConfigRow
+import app.lody.android.create.RunConfigSheet
 import app.lody.android.designsystem.*
 import app.lody.android.runtime.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-@Composable
-internal fun ProviderChoiceField(label: String, value: String, choices: List<ProviderChoice>, enabled: Boolean, onChange: (String) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Column {
-        Text(label, style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary)
-        Box {
-            OutlinedButton(enabled = enabled, onClick = { open = true }) { Text(choices.find { it.id == value }?.name ?: value.ifEmpty { "—" }) }
-            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                choices.forEach { item -> DropdownMenuItem(text = { Text(item.name) }, onClick = { open = false; onChange(item.id) }) }
-            }
-        }
-    }
-}
+/** The draft value a sheet edits; every sheet only changes the draft, and Save persists it. */
+private enum class EditorSheet { Name, Command, Arguments, ApiKey, CustomEndpoint, CodexBaseUrl, TitleGeneration, Usage }
 
+private const val TITLE_DEFAULT = "__default__"
+
+/**
+ * Header, Basics, Command (Custom), Account, Title generation, Environment variables, Delete.
+ * System prompt, description, runtime paths, Pi extensions and binary controls are not shown,
+ * but their loaded values are sent back unchanged on save.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ProviderEditorScreen(editor: ProviderEditor, catalog: List<ProviderCatalogEntry>, canManage: Boolean, busy: Boolean, error: String?, service: AgentProviderService, scope: RuntimeScope, machineId: String, supportsCodexProfiles: Boolean, supportsPiExtensions: Boolean, presets: List<ProviderPreset>, onBack: () -> Unit, onSave: (ProviderFields) -> Unit) {
+internal fun ProviderEditorScreen(editor: ProviderEditor, catalog: List<ProviderCatalogEntry>, canManage: Boolean, busy: Boolean, error: String?, service: AgentProviderService, scope: RuntimeScope,
+    machine: ProviderMachine, presets: List<ProviderPreset>, quotas: List<UsageQuota>, onBack: () -> Unit, onSave: (ProviderFields) -> Unit, onDelete: () -> Unit) {
+    val machineId = machine.id
     val base = editor.base
     val tasks = rememberCoroutineScope()
     var name by rememberSaveable(editor.id) { mutableStateOf(base?.name.orEmpty()) }
-    var prompt by rememberSaveable(editor.id) { mutableStateOf(base?.prompt.orEmpty()) }
+    val prompt = base?.prompt.orEmpty()
     var selection by remember(editor.id) { mutableStateOf(catalog.firstOrNull()?.id.orEmpty()) }
     var cliType by rememberSaveable(editor.id) { mutableStateOf(base?.cliType ?: catalog.firstOrNull()?.cliType.orEmpty()) }
     var agentType by rememberSaveable(editor.id) { mutableStateOf(base?.agentType ?: catalog.firstOrNull()?.agentType.orEmpty()) }
@@ -62,6 +64,9 @@ internal fun ProviderEditorScreen(editor: ProviderEditor, catalog: List<Provider
     var presetId by remember { mutableStateOf<String?>(null) }
     var presetMode by remember { mutableStateOf<String?>(null) }
     var endpoint by remember { mutableStateOf<String?>(null) }
+    var sheet by remember { mutableStateOf<EditorSheet?>(null) }
+    var endpointSheet by remember { mutableStateOf<String?>(null) }
+    var menu by remember { mutableStateOf(false) }
     suspend fun load() {
         loading = true; failed = false
         try {
@@ -75,98 +80,219 @@ internal fun ProviderEditorScreen(editor: ProviderEditor, catalog: List<Provider
     LaunchedEffect(editor.id) { if (base != null) load() }
     val preset = presets.find { it.id == presetId }
     val mode = preset?.modes?.find { it.id == presetMode } ?: preset?.modes?.firstOrNull()
-    val editable = canManage && base?.readOnly != true && !loading
+    // Read-only providers and machines hide Save and More; busy or offline states only disable them.
+    val manageable = !machine.readOnly && base?.readOnly != true
+    val editable = canManage && manageable && !loading
     val fields = ProviderFields(name, prompt, cliType, agentType, if (cliType == "custom") command else "", if (cliType != "custom") emptyList() else if (base != null && arguments == base.args.joinToString("\n")) base.args else if (arguments.isEmpty()) emptyList() else arguments.split('\n'),
         ProviderAdvanced(detailRevision = detail?.revision, description = description.takeIf { detail != null || it.isNotEmpty() }, envPatch = envPatch.takeIf { it.isNotEmpty() }, runtimePaths = paths.takeIf { detail != null || it.isNotEmpty() }, titleValues = titles.takeIf { detail != null || it.isNotEmpty() }, piExtensions = extensions.takeIf { detail?.supportsPiExtensions == true }, codexAuth = codexAuth, presetId = presetId.takeIf { base == null }, presetModeId = mode?.id, presetEndpoint = endpoint))
+    val loaded = detail
+    val notSet = stringResource(R.string.settings_agent_not_set)
+    val defaultLabel = stringResource(R.string.create_default)
+    val enabledLabel = stringResource(R.string.settings_agent_enabled)
+    val disabledLabel = stringResource(R.string.settings_agent_disabled)
+    val modelLabel = stringResource(R.string.settings_agent_model)
+    val modeLabel = stringResource(R.string.settings_agent_mode)
+    val titleSelectors = remember(capabilities, modelLabel, modeLabel) {
+        val options = capabilities.options.toMutableList()
+        if (capabilities.models.isNotEmpty() && options.none { it.id == "model" }) {
+            options.add(0, ProviderOption("model", modelLabel, "select", null, null, capabilities.models))
+        }
+        if (capabilities.modes.isNotEmpty() && options.none { it.id == "mode" }) {
+            options.add(ProviderOption("mode", modeLabel, "select", null, null, capabilities.modes))
+        }
+        options
+    }
+    val showsTitle = preset == null && !capabilities.sessionTitle && titleSelectors.isNotEmpty()
+    val titleSummary = remember(titleSelectors, titles, enabledLabel, disabledLabel) {
+        titleSelectors.mapNotNull { option ->
+            val override = titles[option.id] ?: return@mapNotNull null
+            when {
+                option.type == "boolean" -> (override as? Boolean)?.let { "${option.name}: ${if (it) enabledLabel else disabledLabel}" }
+                override is String && override.isNotEmpty() -> option.choices.find { it.id == override }?.name ?: override
+                else -> null
+            }
+        }.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+    }
+    fun refreshCapabilities() = tasks.launch {
+        refreshing = true; refreshProgress = null; refreshResult = null
+        refreshResult = try {
+            val result = service.refreshModels(scope, machineId, editor.id)
+            capabilities = result.capabilities
+            when { result.authRequired -> R.string.settings_agent_auth_required; result.success -> R.string.settings_agent_refresh_done; else -> R.string.settings_agent_write_unknown }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { R.string.settings_agent_write_unknown }
+        finally { refreshing = false; refreshProgress = null }
+    }
+    fun testConnection() = tasks.launch {
+        loading = true; failed = false
+        try { capabilities = service.probe(scope, machineId, editor.id).capabilities }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { failed = true }
+        finally { loading = false }
+    }
     Scaffold(containerColor = LodyTheme.colors.bgBase, topBar = {
         Row(Modifier.fillMaxWidth().statusBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(LodyIcons.Back, stringResource(R.string.settings_agent_back)) }
             Text(stringResource(if (base == null) R.string.settings_agent_add else R.string.settings_agent_edit), Modifier.weight(1f), style = LodyTheme.typography.headline)
-            TextButton(enabled = editable && fields.valid && (base == null || detail != null), onClick = { onSave(fields) }) { Text(stringResource(R.string.settings_agent_save)) }
+            // Read-only providers and machines offer neither Save nor More.
+            if (manageable) {
+                TextButton(enabled = editable && fields.valid && (base == null || detail != null), onClick = { onSave(fields) }) { Text(stringResource(R.string.settings_agent_save)) }
+                if (base != null) Box {
+                    IconButton(onClick = { menu = true }) { Icon(LodyIcons.More, stringResource(R.string.settings_agent_more)) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(enabled = editable && detail != null && !refreshing, text = { Text(stringResource(R.string.settings_agent_refresh_models)) },
+                            onClick = { menu = false; refreshCapabilities() })
+                        DropdownMenuItem(enabled = editable && detail != null, text = { Text(stringResource(R.string.settings_agent_test)) }, onClick = { menu = false; testConnection() })
+                        DropdownMenuItem(enabled = editable, text = { Text(stringResource(R.string.settings_agent_delete), color = LodyTheme.colors.dangerDefault) }, onClick = { menu = false; onDelete() })
+                    }
+                }
+            }
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(rememberScrollState()).padding(LodySpacing.lg), verticalArrangement = Arrangement.spacedBy(LodySpacing.lg)) {
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(bottom = LodySpacing.xxl)) {
             if (busy || loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (error != null) Text(providerError(error), style = LodyTheme.typography.footnote)
-            if (failed) { Text(stringResource(R.string.settings_agent_load_failed)); TextButton(onClick = { tasks.launch { load() } }, enabled = !loading) { Text(stringResource(R.string.settings_agent_retry)) } }
-            if (base == null) ProviderChoiceField(stringResource(R.string.settings_agent_providers), selection,
+            // 1. Header card.
+            Column(Modifier.fillMaxWidth().padding(LodyLayout.screenPaddingX).background(LodyTheme.colors.bgRaised, RoundedCornerShape(LodyRadius.lg)).padding(LodySpacing.lg),
+                verticalArrangement = Arrangement.spacedBy(LodySpacing.sm)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.md)) {
+                    AgentMark(cliType, agentType, LodyTheme.colors.textPrimary, Modifier.size(LodySize.avatarMd))
+                    Column(Modifier.weight(1f)) {
+                        Text(name.ifBlank { catalog.find { it.id == selection }?.name ?: agentType }, style = LodyTheme.typography.headline, color = LodyTheme.colors.textPrimary, maxLines = 1)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.xs)) {
+                            PresenceDot(machine.online)
+                            Text(machine.name.ifBlank { machine.id }, style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary, maxLines = 1)
+                        }
+                    }
+                }
+                if (base != null) ProviderQuotaLine(quotas, onClick = { sheet = EditorSheet.Usage })
+                if (refreshing) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm)) {
+                    CircularProgressIndicator(Modifier.size(LodyIconSize.sm), color = LodyTheme.colors.textSecondary, strokeWidth = LodyStroke.strong)
+                    Text(refreshLine(refreshProgress), style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary)
+                } else refreshResult?.let { Text(stringResource(it), style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary) }
+                if (error != null) Text(providerError(error), style = LodyTheme.typography.footnote, color = LodyTheme.colors.dangerDefault)
+                if (failed) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.settings_agent_load_failed), Modifier.weight(1f), style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary)
+                    TextButton(onClick = { tasks.launch { load() } }, enabled = !loading) { Text(stringResource(R.string.settings_agent_retry)) }
+                }
+            }
+
+            // 2. Basics.
+            SettingsHeading(stringResource(R.string.settings_agent_basics))
+            if (base == null) ProviderChoiceField(stringResource(R.string.settings_agent_type), selection,
                 catalog.map { ProviderChoice(it.id, it.name) } + presets.map { ProviderChoice("preset:${it.id}", it.name) }, editable) { id ->
                 selection = id; envPatch = emptyMap(); paths = emptyMap(); titles = emptyMap(); endpoint = null; presetMode = null; codexAuth = null; extensions = emptyList()
                 val p = presets.find { "preset:${it.id}" == id }; presetId = p?.id
                 val c = catalog.find { it.id == id }
                 cliType = p?.cliType ?: c?.cliType.orEmpty(); agentType = p?.agentType ?: c?.agentType.orEmpty()
                 name = p?.name ?: c?.name.orEmpty()
-            } else SettingsLine(base.agentType, LodyIcons.Agent, base.cliType)
-            OutlinedTextField(name, { name = it }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_name)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            } else ProviderValueRow(stringResource(R.string.settings_agent_type), providerKind(base, catalog), onClick = null)
+            ProviderValueRow(stringResource(R.string.settings_agent_name), name, onClick = { sheet = EditorSheet.Name }, enabled = editable, placeholder = notSet)
+
+            // 3. Command (Custom only).
             if (cliType == "custom") {
-                OutlinedTextField(command, { command = it }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_command)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                OutlinedTextField(arguments, { arguments = it }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_arguments)) }, supportingText = { Text(stringResource(R.string.settings_agent_arguments_hint)) }, modifier = Modifier.fillMaxWidth(), minLines = 2)
+                SettingsHeading(stringResource(R.string.settings_agent_command))
+                ProviderValueRow(stringResource(R.string.settings_agent_command), command, onClick = { sheet = EditorSheet.Command }, enabled = editable, placeholder = notSet)
+                ProviderValueRow(stringResource(R.string.settings_agent_arguments), arguments.replace('\n', ' '), onClick = { sheet = EditorSheet.Arguments }, enabled = editable, placeholder = notSet)
             }
+
+            // 4. Account.
+            val codex = (detail?.supportsCodexProfiles ?: machine.supportsCodexProfiles) && agentType == "codex"
+            val endpoints = detail?.endpoints.orEmpty()
+            if (preset != null || codex || endpoints.isNotEmpty()) SettingsHeading(stringResource(R.string.settings_agent_account))
             if (preset != null) {
+                val tokenSet = envPatch[preset.tokenEnvKey]?.isNotEmpty() == true || (preset.tokenEnvKey in detail?.envKeys.orEmpty() && !envPatch.containsKey(preset.tokenEnvKey))
+                ProviderValueRow(stringResource(R.string.settings_agent_api_key_short), stringResource(if (tokenSet) R.string.settings_agent_set else R.string.settings_agent_not_set),
+                    onClick = { sheet = EditorSheet.ApiKey }, enabled = editable)
                 if (preset.modes.isNotEmpty()) ProviderChoiceField(stringResource(R.string.settings_agent_endpoint), mode?.id.orEmpty(), preset.modes.map { ProviderChoice(it.id, it.name) }, editable) { presetMode = it; endpoint = null }
                 if (mode?.endpoints?.isNotEmpty() == true) ProviderChoiceField(stringResource(R.string.settings_agent_endpoint), endpoint ?: mode.endpoint.orEmpty(), mode.endpoints.map { ProviderChoice(it.url, it.name) }, editable) { endpoint = it }
-                if (mode?.customEndpoint == true) OutlinedTextField(endpoint ?: mode.endpoint.orEmpty(), { endpoint = it }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_endpoint)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                OutlinedTextField(envPatch[preset.tokenEnvKey].orEmpty(), { envPatch = envPatch + (preset.tokenEnvKey to it) }, enabled = editable,
-                    label = { Text(stringResource(R.string.settings_agent_api_key)) }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
+                if (mode?.customEndpoint == true) ProviderValueRow(stringResource(R.string.settings_agent_endpoint), endpoint ?: mode.endpoint.orEmpty(), onClick = { sheet = EditorSheet.CustomEndpoint }, enabled = editable, placeholder = notSet)
             }
-            detail?.endpoints?.forEach { (key, original) -> OutlinedTextField(envPatch[key] ?: original, { envPatch = envPatch + (key to it) }, enabled = editable,
-                label = { Text(key) }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-            if (base != null && detail != null) {
-                TextButton(enabled = editable, onClick = { tasks.launch {
-                    loading = true; failed = false
-                    try { capabilities = service.probe(scope, machineId, editor.id).capabilities }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { failed = true }
-                    finally { loading = false }
-                } }) { Text(stringResource(R.string.settings_agent_test)) }
-                TextButton(enabled = editable && !refreshing, onClick = { tasks.launch {
-                    refreshing = true; refreshProgress = null; refreshResult = null
-                    refreshResult = try {
-                        val result = service.refreshModels(scope, machineId, editor.id)
-                        capabilities = result.capabilities
-                        when { result.authRequired -> R.string.settings_agent_auth_required; result.success -> R.string.settings_agent_refresh_done; else -> R.string.settings_agent_write_unknown }
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { R.string.settings_agent_write_unknown }
-                    finally { refreshing = false; refreshProgress = null }
-                } }) { Text(stringResource(R.string.settings_agent_refresh_models)) }
-                if (refreshing) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm)) {
-                    CircularProgressIndicator(Modifier.size(LodyIconSize.sm), color = LodyTheme.colors.textSecondary)
-                    Text(refreshLine(refreshProgress), style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary)
-                } else refreshResult?.let { Text(stringResource(it), style = LodyTheme.typography.footnote, color = LodyTheme.colors.textSecondary) }
-                ProviderAuthentication(service, scope, machineId, editor.id, detail!!, editable)
-
-            }
-            if (detail != null || (base == null && cliType in setOf("builtin", "registry"))) key(cliType, agentType) {
-                ProviderRuntimeControls(service, scope, machineId, base?.id, detail, cliType, agentType, supportsPiExtensions, editable, extensions) { extensions = it }
-            }
-            if ((detail?.supportsCodexProfiles ?: supportsCodexProfiles) && agentType == "codex") {
-                    ProviderChoiceField(stringResource(R.string.settings_agent_auth_method), codexAuth?.mode ?: "chatgpt", listOf(ProviderChoice("chatgpt", "ChatGPT"), ProviderChoice("api-key", stringResource(R.string.settings_agent_api_key_short))), editable) {
-                        codexAuth = ProviderCodexAuth(it, codexAuth?.profileId ?: java.util.UUID.randomUUID().toString(), if (it == "api-key") codexAuth?.baseUrl ?: "https://api.openai.com/v1" else null)
-                    }
-                    if (codexAuth?.mode == "api-key") OutlinedTextField(codexAuth?.baseUrl.orEmpty(), { codexAuth = codexAuth?.copy(baseUrl = it) }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_endpoint)) }, modifier = Modifier.fillMaxWidth())
+            if (codex) {
+                ProviderChoiceField(stringResource(R.string.settings_agent_auth_method), codexAuth?.mode ?: "chatgpt", listOf(ProviderChoice("chatgpt", "ChatGPT"), ProviderChoice("api-key", stringResource(R.string.settings_agent_api_key_short))), editable) {
+                    codexAuth = ProviderCodexAuth(it, codexAuth?.profileId ?: java.util.UUID.randomUUID().toString(), if (it == "api-key") codexAuth?.baseUrl ?: "https://api.openai.com/v1" else null)
                 }
-            OutlinedTextField(description, { description = it }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_description)) }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(prompt, { prompt = it }, enabled = editable, label = { Text(stringResource(R.string.settings_agent_prompt)) }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                if (codexAuth?.mode == "api-key") ProviderValueRow(stringResource(R.string.settings_agent_endpoint), codexAuth?.baseUrl, onClick = { sheet = EditorSheet.CodexBaseUrl }, enabled = editable, placeholder = notSet)
+            }
+            endpoints.forEach { (key, original) -> ProviderValueRow(key, envPatch[key] ?: original, onClick = { endpointSheet = key }, enabled = editable, placeholder = notSet) }
+
+            // 5. Title generation.
+            if (showsTitle) {
+                Spacer(Modifier.height(LodySpacing.md))
+                ProviderValueRow(
+                    stringResource(R.string.settings_agent_title_generation),
+                    titleSummary,
+                    onClick = { sheet = EditorSheet.TitleGeneration },
+                    enabled = editable,
+                    placeholder = defaultLabel,
+                )
+                ProviderFootnote(stringResource(R.string.settings_agent_title_generation_hint))
+            }
+
+            // 6. Environment variables.
             ProviderEnvironment(detail?.envKeys.orEmpty().filterNot { it in preset?.protectedEnvKeys.orEmpty() }, envPatch.filterKeys { it !in preset?.protectedEnvKeys.orEmpty() }, editable) { changed ->
                 envPatch = envPatch.filterKeys { it in preset?.protectedEnvKeys.orEmpty() } + changed
             }
-            val pathKey = if (cliType == "builtin") mapOf("codex" to "codexPath", "claude" to "claudeCodeExecutable", "kimi" to "kimiPath", "grok" to "grokPath", "devin" to "devinPath", "pi" to "piPath")[agentType] else null
-            if (pathKey != null) OutlinedTextField(paths[pathKey].orEmpty(), { paths = paths + (pathKey to it.takeIf(String::isNotBlank)) }, enabled = editable,
-                label = { Text(stringResource(R.string.settings_agent_runtime_path)) }, supportingText = { Text(stringResource(R.string.settings_agent_runtime_path_hint)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            if (!capabilities.sessionTitle) {
-                Text(stringResource(R.string.settings_agent_title_generation), style = LodyTheme.typography.body)
-                val selectors = capabilities.options.ifEmpty {
-                    listOfNotNull(capabilities.models.takeIf { it.isNotEmpty() }?.let { ProviderOption("model", stringResource(R.string.settings_agent_model), "select", null, null, it) },
-                        capabilities.modes.takeIf { it.isNotEmpty() }?.let { ProviderOption("mode", stringResource(R.string.settings_agent_mode), "select", null, null, it) })
-                }
-                if (selectors.isEmpty()) Text(stringResource(R.string.settings_agent_test_hint), style = LodyTheme.typography.footnote)
-                selectors.forEach { option ->
-                    if (option.type == "boolean") Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(option.name, Modifier.weight(1f)); Switch(checked = titles[option.id] as? Boolean ?: option.booleanValue ?: false, enabled = editable, onCheckedChange = { titles = titles + (option.id to it) })
-                    } else ProviderChoiceField(option.name, titles[option.id] as? String ?: option.value.orEmpty(), option.choices, editable) { titles = titles + (option.id to it) }
-                }
+            if (extensions.isNotEmpty()) ProviderFootnote(stringResource(R.string.settings_agent_pi_extensions, extensions.size))
+            if ("sorbetCredentials" in detail?.unavailableActions.orEmpty() || "sorbetProviders" in detail?.unavailableActions.orEmpty()) ProviderFootnote(stringResource(R.string.settings_agent_sorbet_unavailable))
+
+            // 7. Delete.
+            if (base != null && manageable) {
+                Spacer(Modifier.height(LodyLayout.sectionGap))
+                ProviderValueRow(stringResource(R.string.settings_agent_delete), null, onClick = onDelete, enabled = editable, labelColor = LodyTheme.colors.dangerDefault)
             }
         }
     }
+
+    val close = { sheet = null }
+    when (sheet) {
+        EditorSheet.Name -> ProviderTextSheet(stringResource(R.string.settings_agent_name), name, close, { name = it; close() }, allowEmpty = false)
+        EditorSheet.Command -> ProviderTextSheet(stringResource(R.string.settings_agent_command), command, close, { command = it; close() })
+        EditorSheet.Arguments -> ProviderTextSheet(stringResource(R.string.settings_agent_arguments), arguments, close, { arguments = it; close() },
+            multiline = true, hint = stringResource(R.string.settings_agent_arguments_hint))
+        EditorSheet.ApiKey -> if (preset != null) ProviderTextSheet(stringResource(R.string.settings_agent_api_key_short), "", close,
+            { envPatch = envPatch + (preset.tokenEnvKey to it); close() }, secret = true, hint = stringResource(R.string.settings_agent_api_key), allowEmpty = false)
+        EditorSheet.CustomEndpoint -> ProviderTextSheet(stringResource(R.string.settings_agent_endpoint), endpoint ?: mode?.endpoint.orEmpty(), close, { endpoint = it; close() })
+        EditorSheet.CodexBaseUrl -> ProviderTextSheet(stringResource(R.string.settings_agent_endpoint), codexAuth?.baseUrl.orEmpty(), close, { codexAuth = codexAuth?.copy(baseUrl = it); close() })
+        EditorSheet.TitleGeneration -> if (showsTitle) {
+            ModalBottomSheet(onDismissRequest = close, containerColor = LodyTheme.colors.bgBase) {
+                RunConfigSheet(
+                    title = stringResource(R.string.settings_agent_title_generation),
+                    rows = titleSelectors.map { option ->
+                        if (option.type == "boolean") {
+                            RunConfigRow(option.id, option.name, emptyList(), toggle = titles[option.id] as? Boolean ?: option.booleanValue ?: false)
+                        } else {
+                            val selectedId = titles[option.id] as? String
+                            val defaultOption = PickerOption(TITLE_DEFAULT, defaultLabel, selected = selectedId == null)
+                            RunConfigRow(
+                                option.id,
+                                option.name,
+                                listOf(defaultOption) + option.choices.map { PickerOption(it.id, it.name, selected = it.id == selectedId) },
+                            )
+                        }
+                    },
+                    defaultLabel = defaultLabel,
+                ) { rowId, pickedId ->
+                    val option = titleSelectors.find { it.id == rowId } ?: return@RunConfigSheet
+                    titles = when {
+                        option.type == "boolean" -> titles + (rowId to (pickedId == RUN_CONFIG_ON))
+                        pickedId == TITLE_DEFAULT -> titles - rowId
+                        else -> titles + (rowId to pickedId)
+                    }
+                }
+            }
+        }
+        EditorSheet.Usage -> ProviderQuotaSheet(name.ifBlank { base?.name.orEmpty() }, quotas, offline = !machine.online,
+            refresh = if (editable && machine.online && loaded != null && loaded.supportsRateLimitsRefresh && "rate-limits-refresh" !in loaded.unavailableActions)
+                suspend { service.operation(scope, machineId, editor.id, "rate-limits-refresh", cliType, agentType).success } else null, onDismiss = close)
+        null -> Unit
+    }
+    endpointSheet?.let { key ->
+        ProviderTextSheet(key, envPatch[key] ?: detail?.endpoints?.get(key).orEmpty(), { endpointSheet = null }, { envPatch = envPatch + (key to it); endpointSheet = null })
+    }
 }
+
+/** The provider's kind for its row subtitle: catalog name, "Custom", or the agent type. */
+@Composable
+internal fun providerKind(provider: AgentProvider, catalog: List<ProviderCatalogEntry>): String =
+    if (provider.cliType == "custom") stringResource(R.string.settings_agent_kind_custom)
+    else catalog.find { it.cliType == provider.cliType && it.agentType == provider.agentType }?.name ?: provider.agentType

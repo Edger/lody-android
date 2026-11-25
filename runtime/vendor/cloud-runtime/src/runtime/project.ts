@@ -74,6 +74,8 @@ export type ItemSummary =
       hasDetail: boolean;
       /** Plan text a `switch_mode` (plan-approval) card carries; see `planExitMarkdown`. */
       plan?: string;
+      /** Web `isProcessStatusToolCall`: a one-line status (e.g. context compaction), not a tool card. */
+      activityKind?: 'context_compaction' | 'codex_retry';
       permission?: {
         requestId: string;
         pending: boolean;
@@ -135,6 +137,8 @@ export type Envelope = {
   status: string;
   reason?: string;
   revision: number;
+  sendReady?: boolean;
+  controlReady?: boolean;
   billableTurnCount?: number;
   usage?: SessionUsage;
   historyHasMore?: boolean;
@@ -368,6 +372,11 @@ function summarizeItem(
   if (type === 'tool_call') {
     const diff = countDiff(raw.content);
     const plan = raw.kind === 'switch_mode' ? planExitMarkdown(raw) : undefined;
+    const activityKind =
+      raw.activityKind === 'context_compaction' ||
+      raw.activityKind === 'codex_retry'
+        ? (raw.activityKind as 'context_compaction' | 'codex_retry')
+        : undefined;
     const questionMeta = parseQuestionMeta(raw.permissionRequest?._meta);
     const isQuestion =
       !!questionMeta ||
@@ -407,6 +416,7 @@ function summarizeItem(
         raw.rawInput != null ||
         raw.rawOutput != null,
       ...(plan ? { plan } : {}),
+      ...(activityKind ? { activityKind } : {}),
       permission,
     };
     summary.rev = bump(

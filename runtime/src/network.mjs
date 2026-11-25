@@ -1,36 +1,54 @@
+// First: read-access and the vendored runtime use AbortSignal.any (Chrome 116+), URL.canParse
+// (Chrome 120+) and AbortSignal.timeout (Chrome 103+); the bundles target Chrome 100.
+import '../vendor/cloud-runtime/src/runtime/platform-fallbacks.ts';
+import './abort-signal-timeout.mjs';
 import {expandMentions} from '../vendor/cloud-runtime/src/runtime/mention-expansion.ts';
+import {expandShortcuts} from '../vendor/cloud-runtime/src/runtime/prompt-shortcuts.ts';
+import {sessionMcpSelection} from '../vendor/cloud-runtime/src/runtime/mcp.ts';
 import {referenceSpans} from '../vendor/cloud-runtime/src/protocol/message-references.ts';
 import {contractBridge} from './contract-bridge.mjs';
 import '../vendor/cloud-runtime/src/runtime/index.ts';
 import {createDispatcher,HOST_PROTOCOL,CORE_CAPABILITIES} from './dispatch.mjs';
 import {createReadAccess} from './read-access.mjs';
 import {createCommands,billingEntitlement} from './create-commands.mjs';
-import {controlTurn,itemDetail,respondPermission,sendTurn,stopSessions} from '../vendor/cloud-runtime/src/runtime/session.ts';
+import {controlTurn,itemDetail,respondPermission,sendTurn,sessionDoc,sessionHistory,stopSessions} from '../vendor/cloud-runtime/src/runtime/session.ts';
+import {appendMessageQuotes,quoteSessionEnvelopes} from './message-quotes.mjs';
 import {cloudCommands} from './cloud-commands.mjs';
 import {providerCommands} from './provider-commands.mjs';
 import {roleCommands} from './role-commands.mjs';
 import {shortcutCommands} from './shortcut-commands.mjs';
 import {scheduleCommands} from './schedule-commands.mjs';
 import {proposalCommands} from './proposal-commands.mjs';
+import {withDiffScope} from './diff-commands.mjs';
 const emit=message=>globalThis.webkit.messageHandlers.dataRuntime.postMessage(message);
-const access=createReadAccess(globalThis.fetch.bind(globalThis),emit);
+// The Status view clock reads the worker's /api/time (build-time backend config, as on iOS).
+const access=createReadAccess(globalThis.fetch.bind(globalThis),emit,{timeUrl:`${LODY_MOBILE_WORKER_URL}/api/time`});
 globalThis.fetch=access.fetch;
 // Bundled Streams uses fetch. Other outbound APIs have no permission in this host.
 globalThis.XMLHttpRequest=undefined;globalThis.WebSocket=undefined;globalThis.EventSource=undefined;
-const runtime=contractBridge(globalThis.dataRuntime,emit);
+// The watched session's user turns carry their quote blocks (spans the shared projection drops).
+const quoted=quoteSessionEnvelopes(sessionHistory,sessionDoc);
+const runtime=contractBridge(globalThis.dataRuntime,message=>emit(quoted(message)));
 const core={ping:()=>runtime.ping(),probeSchema:()=>runtime.probeSchema(),setActive:active=>{access.setActive(active);if(!active)stopSessions();return runtime.setActive(active);}};
 const cloud=cloudCommands(runtime,access,stopSessions);
 // Native answers a shortcutCloud request it received as an event.
 cloud.shortcutCloudReply=(requestId,reply)=>runtime.shortcutCloud(requestId,reply);
-// Native answers a previewToken request (a preview proof's request token) it received as an event.
-cloud.previewTokenReply=(requestId,reply)=>runtime.previewToken(requestId,reply);
+// Native answers a scoped preview or history proof request.
+cloud.machineTokenReply=(requestId,reply)=>runtime.machineToken(requestId,reply);
 let identity;
-const connect=cloud.connect;cloud.connect=(workspaceId,gateway,userId)=>{const result=connect(workspaceId,gateway,userId);identity={workspaceId,userId};return result;};
+const connect=cloud.connect;cloud.connect=(workspaceId,gateway,userId,readOnly)=>{const result=connect(workspaceId,gateway,userId,readOnly);identity={workspaceId,userId};return result;};
 // A tool step's detail (command, output, diff) reads the watched session's local replica only.
 const detail={
  setTabClosed:(sessionId,closed)=>{if(!identity)throw Error("not_connected");return runtime.setTabClosed({workspaceId:identity.workspaceId,sessionId,closed});},
  // Archive or unarchive a conversation (iOS `SessionWrite.archive`); a write, never retried.
  archiveSession:(sessionId,archived)=>{if(!identity)throw Error("not_connected");if(typeof archived!=='boolean')throw Error('invalid_action');return runtime.archiveSession({workspaceId:identity.workspaceId,sessionId,archived});},
+ // One Status view / pin-section command, planned against the runtime's replica by the shared planner; a write, never retried.
+ // `scope` names the list the gesture happened in (`move.beforeId` resolves against it); `{writes}` 0 is refused or no-op.
+ statusViewCommand:(command,scope)=>{if(!identity)throw Error('not_connected');if(!command||typeof command!=='object'||typeof command.type!=='string'||(scope!=null&&scope!=='mine'&&scope!=='team'))throw Error('invalid_action');return runtime.statusViewCommand({workspaceId:identity.workspaceId,command,...(scope?{scope}:{})});},
+ // The Later presets resolved on the runtime's synced clock.
+ snoozePresets:()=>{if(!identity)throw Error('not_connected');return runtime.snoozePresets({});},
+ // Read receipt for an opened conversation (iOS marks read on view); monotonic in the runtime.
+ markSessionRead:(sessionId,lastReadAt)=>{if(!identity)throw Error('not_connected');if(typeof sessionId!=='string'||!Number.isFinite(lastReadAt))throw Error('invalid_action');return runtime.markSessionRead({workspaceId:identity.workspaceId,sessionId,lastReadAt});},
  messageAction: (kind, input) => {
   if (!identity || !input || !['edit','fork'].includes(kind) || !['read','send'].includes(input.action)) throw Error('invalid_action');
   const args={...input,workspaceId:identity.workspaceId,userId:identity.userId,billingEntitlement:billingEntitlement(input.billingEntitlement)};
@@ -41,6 +59,10 @@ const detail={
  retryPendingInput:(sessionId,inputId)=>runtime.retryPendingInput({sessionId,inputId}),
  forgetPendingInput:(sessionId,inputId)=>runtime.forgetPendingInput({sessionId,inputId}),
  itemDetail:(sessionId,entryId,itemId)=>itemDetail({sessionId,entryId,itemId}),turnDiff:(sessionId,entryId,path)=>runtime.turnDiff({sessionId,entryId,path}),
+ // Working tree changes: every changed file, and one file's current text against its base. Reads only.
+ // `scope` is the machine's `uncommitted` comparison; omitting it keeps the default branch range.
+ workspaceChanges:(sessionId,scope,_signal)=>runtime.workspaceChanges(withDiffScope({sessionId},scope)),
+ fileDiff:(sessionId,path,scope,_signal)=>runtime.fileDiff(withDiffScope({sessionId,path},scope)),
  // Browse files: a folder of the session's local project (relative to its root) and a file's contents (relative to the session's directory). Reads only.
  listDir:(sessionId,relativePath)=>{const scope=identity;if(!scope)throw Error('not_connected');return runtime.listDir({workspaceId:scope.workspaceId,sessionId,relativePath,userId:scope.userId});},
  readFile:(sessionId,path)=>runtime.readFile({sessionId,path}),
@@ -58,14 +80,36 @@ const detail={
   try{const result=await respondPermission({sessionId,entryId,itemId,requestId,optionId,...(answers&&typeof answers==='object'&&!Array.isArray(answers)?{answers}:{})});return {state:result.state};}
   catch(error){const code=String(error?.message??'');return {error:['session_not_ready','workspace_changed','invalid_option','invalid_answers','upload_failed'].includes(code)?code:'permission_write_failed'};}
  }};
-const sendWithReferences = args => sendTurn(args, async text => {
+// A quoted turn expands mentions in its main text only, then appends the quote blocks and comments
+// (Web order), so a quote's snapshot is never rewritten. `/shortcut:<slug>` tokens (a shortcut
+// chosen before its body was read) expand first, as the shared `sendTurn` handler does.
+const sendWithReferences = ({quotes,quoteMain,...args}) => sendTurn(args, async text => {
  const items = [];
- const expanded = await expandMentions(text, async category => {
-  const catalog = await runtime.mentionCatalog({workspaceId:identity.workspaceId,sessionId:args.sessionId,machineId:args.machineId,userId:args.userId,cliType:args.cliType,agentType:args.agentType,category});
-  items.push(...catalog.items);
-  return catalog;
- });
- return {text:expanded,spans:referenceSpans(expanded,items)};
+ const source = quotes?.length ? quoteMain : text;
+ if (!source && quotes?.length) return appendMessageQuotes('', [], quotes);
+ const shortcuts={workspaceId:identity.workspaceId,userId:args.userId};
+ const expanded = await expandShortcuts(
+  source,
+  async () => (await runtime.promptShortcuts({...shortcuts,action:'list'})).entries,
+  async entry => (await runtime.promptShortcuts({...shortcuts,action:'read',entry})).shortcut,
+  part => expandMentions(part, async category => {
+   const catalog = await runtime.mentionCatalog({workspaceId:identity.workspaceId,sessionId:args.sessionId,machineId:args.machineId,userId:args.userId,cliType:args.cliType,agentType:args.agentType,category});
+   items.push(...catalog.items);
+   return catalog;
+  }),
+ );
+ const spans = referenceSpans(expanded,items);
+ return quotes?.length ? appendMessageQuotes(expanded,spans,quotes) : {text:expanded,spans};
+},
+// A conversation's first turn takes the workspace's default MCP servers; later turns keep their
+// persisted selection, [] included (the shared `sendTurn` handler, iOS #156).
+persisted => {
+ const workspaceId=identity.workspaceId;
+ return sessionMcpSelection(workspaceId, async () => {
+  const value=await runtime.requestGrant();
+  if(identity?.workspaceId!==workspaceId)throw Error('workspace_changed');
+  return value;
+ }, persisted, AbortSignal.timeout(30000));
 });
 globalThis.androidDispatch=createDispatcher(core,emit,{...cloud,...createCommands(runtime,sendWithReferences,()=>identity),...scheduleCommands(runtime,()=>identity),...proposalCommands(runtime,()=>identity),...providerCommands(runtime,()=>identity),...roleCommands(runtime,()=>identity),...shortcutCommands(runtime,()=>identity),...detail});
-emit({type:'hostReady',protocol:HOST_PROTOCOL,capabilities:[...CORE_CAPABILITIES,'connect','grant','watchSession','closeSession','loadOlderSession','forgetPendingInput','retryPendingInput','creationOptions','createAndSend','sendText','turnQuota','itemDetail','createTab','turnDiff','listDir','readFile','controlTurn','respondPermission','agentRoles','mentionCatalog','localProjects','shortcutBody','projectGroups','messageAction','setTabClosed','archiveSession','schedules','scheduleDetail','scheduleCommand','decideProposal','agentProviders','agentProviderDetail','agentProviderProbe','agentProviderAuth','agentProviderOperation','agentRoleSettings','shortcutCloudReply','shortcutSettings','sessionPreview','iosSimulatorControl','androidEmulatorControl','previewTokenReply']});
+emit({type:'hostReady',protocol:HOST_PROTOCOL,capabilities:[...CORE_CAPABILITIES,'connect','grant','watchSession','closeSession','loadOlderSession','forgetPendingInput','retryPendingInput','creationOptions','createAndSend','sendText','turnQuota','itemDetail','createTab','turnDiff','workspaceChanges','fileDiff','listDir','readFile','controlTurn','respondPermission','agentRoles','mentionCatalog','localProjects','shortcutBody','projectGroups','messageAction','setTabClosed','archiveSession','statusViewCommand','snoozePresets','markSessionRead','schedules','scheduleDetail','scheduleCommand','decideProposal','agentProviders','agentProviderDetail','agentProviderProbe','agentProviderAuth','agentProviderOperation','agentRoleSettings','shortcutCloudReply','shortcutSettings','sessionPreview','iosSimulatorControl','androidEmulatorControl','machineTokenReply']});

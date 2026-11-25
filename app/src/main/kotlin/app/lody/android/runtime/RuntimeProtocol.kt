@@ -50,6 +50,17 @@ internal object RuntimeProtocol {
                     referenceOffset += value.length + 2
                     ranges
                 }
+                var quoteOffset = 0
+                val quotes = if (role != "user") emptyList() else rawItems.filter { it.optString("type") == "text" }.flatMap { item ->
+                    val value = item.optString("text")
+                    val blocks = item.optJSONArray("quotes")?.objects().orEmpty().mapNotNull { quote ->
+                        val start = quote.optInt("start", -1); val end = quote.optInt("end", -1)
+                        val snapshot = quote.opt("snapshot") as? String
+                        if (start < 0 || end <= start || end > value.length || snapshot == null) null else MessageQuoteBlock(start + quoteOffset, end + quoteOffset, snapshot)
+                    }
+                    quoteOffset += value.length + 2
+                    blocks
+                }
                 val items = rawItems.mapNotNull(::turnItem)
                 val files = entry.optJSONArray("fileDiffs")?.objects()?.mapNotNull { file ->
                     val path = file.optString("path").takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -62,6 +73,7 @@ internal object RuntimeProtocol {
                     role = role,
                     text = text,
                     references = references,
+                    quotes = quotes,
                     streaming = role == "assistant" && !entry.optBoolean("finished", true),
                     timestamp = (entry.opt("timestamp") as? String)?.takeIf { it.isNotBlank() },
                     status = entry.optString("status"),
@@ -114,9 +126,10 @@ internal object RuntimeProtocol {
                     agentRoleId = field("agentRoleId"), roleKnown = value.has("agentRoleId"),
                 )
             }
+            val status = envelope.text("status")
             RuntimeEvent.SessionUpdated(SessionSnapshot(
                 id = message.text("sessionId"),
-                status = envelope.text("status"),
+                status = status,
                 messages = entries + pending,
                 composer = composer,
                 usage = SessionUsageJson.parse(envelope.optJSONObject("usage")),
@@ -124,6 +137,8 @@ internal object RuntimeProtocol {
                 historyHasMore = envelope.optBoolean("historyHasMore"),
                 historyLoading = envelope.optBoolean("historyLoading"),
                 billableTurnCount = (envelope.opt("billableTurnCount") as? Number)?.toInt()?.takeIf { it >= 0 },
+                sendReady = (envelope.opt("sendReady") as? Boolean) ?: (status == "live"),
+                controlReady = (envelope.opt("controlReady") as? Boolean) ?: (status == "live"),
             ))
         }
         "catalog" -> {
@@ -134,7 +149,8 @@ internal object RuntimeProtocol {
             val sessions = catalog.getJSONArray("sessions").objects().map {
                 CatalogJson.session(CatalogSession(it.text("id"), it.text("machineId"), it.text("projectId"), it.text("title"), it.text("status"), it.get("archived") as Boolean, it.get("pinned") as Boolean, it.text("createdAt")), it)
             }
-            RuntimeEvent.CatalogUpdated(CatalogSnapshot(message.nonnegative("revision"), projects, sessions, strings(catalog.getJSONArray("machineIds")), CatalogJson.machineNames(catalog), CatalogJson.machineOs(catalog), ProviderUsageJson.parse(catalog), CatalogJson.machineSimulators(catalog), CatalogJson.machineEmulators(catalog), CatalogJson.machineCapabilities(catalog)))
+            RuntimeEvent.CatalogUpdated(CatalogSnapshot(message.nonnegative("revision"), projects, sessions, strings(catalog.getJSONArray("machineIds")), CatalogJson.machineNames(catalog), CatalogJson.machineOs(catalog), ProviderUsageJson.parse(catalog), CatalogJson.machineSimulators(catalog), CatalogJson.machineEmulators(catalog), CatalogJson.machineCapabilities(catalog),
+                StatusViewJson.statusView(catalog.optJSONObject("statusView")), StatusViewJson.pinSections(catalog.optJSONArray("pinSections"))))
         }
         "synced" -> {
             val count = message.nonnegative("streams"); require(count <= Int.MAX_VALUE)
@@ -147,7 +163,7 @@ internal object RuntimeProtocol {
         "networkStatus" -> RuntimeEvent.SyncFailed(if (message.optString("status") == "authorization_required") "grant_expired" else "network_unavailable")
         "grant" -> RuntimeEvent.GrantRequested
         "shortcutCloud" -> RuntimeEvent.ShortcutCloudRequested(message.getString("requestId"), message.getString("operation"), message.getString("args"))
-        "previewToken" -> RuntimeEvent.PreviewTokenRequested(message.getString("requestId"), message.getString("intent"))
+        "machineToken" -> RuntimeEvent.MachineTokenRequested(message.getString("requestId"), message.getString("operation"), message.getString("intent"))
         else -> null
     }
     fun schema(message: JSONObject): RuntimeResult.Schema {
@@ -173,7 +189,25 @@ internal object RuntimeProtocol {
             added = (json.opt("add") as? Number)?.toInt(),
             removed = (json.opt("del") as? Number)?.toInt(),
             unavailable = if (ok) null else json.optString("reason").ifBlank { "unavailable" },
+            tooLarge = ok && listOf("old", "new").any { json.optJSONObject(it)?.optString("kind") == "too_large" },
         )
+    }
+
+    /** Upstream `workspaceChanges`: the working tree's files, or why they are unavailable. */
+    fun workspaceChanges(json: JSONObject): WorkspaceChanges {
+        if (json.optString("status") != "ok") return WorkspaceChanges.Unavailable(json.optString("reason").ifBlank { "unavailable" })
+        val array = json.optJSONArray("files") ?: throw IllegalArgumentException("invalid_workspace_changes")
+        return WorkspaceChanges.Ready((0 until array.length()).mapNotNull { index ->
+            val file = array.optJSONObject(index) ?: return@mapNotNull null
+            val path = file.optString("path")
+            if (path.isEmpty()) return@mapNotNull null
+            WorkspaceChange(
+                path = path,
+                added = (file.opt("add") as? Number)?.toInt(),
+                removed = (file.opt("del") as? Number)?.toInt(),
+                kind = file.optString("kind").ifBlank { null },
+            )
+        })
     }
 
     /** Upstream `listDir`, leniently: malformed entries are dropped, folders first, then by name. */
@@ -229,7 +263,7 @@ internal object RuntimeProtocol {
         return when (item.optString("type")) {
             "text" -> item.optString("text").takeIf { it.isNotBlank() }?.let { TurnItem.Text(id, it) }
             "thought" -> item.optString("text").takeIf { it.isNotBlank() }?.let { TurnItem.Thought(id, it) }
-            "tool_call" -> TurnItem.Tool(
+            "tool_call" -> if (item.optString("activityKind") == "context_compaction") TurnItem.Compaction(id, item.optString("status")) else TurnItem.Tool(
                 id,
                 kind = item.optString("kind"),
                 title = item.optString("title"),
@@ -285,6 +319,9 @@ internal object RuntimeProtocol {
                     fileName = file.optString("fileName").ifBlank { "file" },
                     mimeType = (file.opt("mimeType") as? String)?.takeIf { it.isNotBlank() },
                     sizeBytes = (file.opt("sizeBytes") as? Number)?.toLong()?.takeIf { it >= 0 },
+                    fileId = file.optString("id"),
+                    storageSessionId = (file.opt("storageSessionId") as? String)?.takeIf { it.isNotBlank() },
+                    transport = (file.opt("transport") as? String)?.takeIf { it.isNotBlank() },
                 )
             }
             "system_notice" -> {
@@ -368,7 +405,18 @@ internal object RuntimeProtocol {
             "image_group" -> item.optJSONArray("images")?.objects().orEmpty()
             else -> emptyList()
         }.map(::imageAttachment) +
-            listOfNotNull(item.optJSONObject("file")?.takeIf { item.optString("type") == "file" }?.let { MessageAttachment(it.optString("fileName").ifBlank { "file" }, image = false) })
+            listOfNotNull(item.optJSONObject("file")?.takeIf { item.optString("type") == "file" }?.let {
+                val name = it.optString("fileName").ifBlank { "file" }
+                MessageAttachment(name, image = false, file = it.optString("id").takeIf { id -> id.isNotEmpty() }?.let { id ->
+                    app.lody.android.chat.SessionFileRef(
+                        id, name,
+                        storageSessionId = (it.opt("storageSessionId") as? String)?.takeIf { value -> value.isNotBlank() },
+                        transport = (it.opt("transport") as? String)?.takeIf { value -> value.isNotBlank() },
+                        sizeBytes = (it.opt("sizeBytes") as? Number)?.toLong()?.takeIf { size -> size >= 0 },
+                        mimeType = (it.opt("mimeType") as? String)?.takeIf { value -> value.isNotBlank() },
+                    )
+                })
+            })
     }
 
     /** A user attachment picture; its session image is kept when the server gave it an id. */

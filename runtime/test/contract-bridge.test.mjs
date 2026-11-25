@@ -78,6 +78,10 @@ test('contract bridge translates requests, events and native grant replies',asyn
  assert.deepEqual(sent.find(e=>e.method==='retryPendingInput').payload,{sessionId:'s',inputId:'i'});
  await bridge.forgetPendingInput({sessionId:'s',inputId:'i'});
  assert.deepEqual(sent.find(e=>e.method==='forgetPendingInput').payload,{sessionId:'s',inputId:'i'});
+ await bridge.workspaceChanges({sessionId:'s'});
+ assert.deepEqual(sent.find(e=>e.method==='workspaceChanges').payload,{sessionId:'s'});
+ await bridge.fileDiff({sessionId:'s',path:'a.ts'});
+ assert.deepEqual(sent.find(e=>e.method==='fileDiff').payload,{sessionId:'s',path:'a.ts'});
  const event={v:1,gen:1,kind:'event',method:'session',payload:{sessionId:'s',session:'{}',synced:true}};
  globalThis.androidRuntimeMessage({type:'envelope',envelope:JSON.stringify(event)});
  assert.equal(events.at(-1).sessionId,'s');
@@ -182,21 +186,35 @@ test('previewToken share requests go to native once, only for this workspace, an
  const intent=workspaceId=>({workspaceId,machineId:'m',sessionId:'s',runtimeNonce:'n',requestId:'r',operation:{action:'revoke'}});
  const ask=(id,workspaceId,operation='previewToken')=>globalThis.androidRuntimeMessage({type:'envelope',envelope:JSON.stringify({v:1,gen:1,kind:'request',id,method:'shareRequest',payload:{workspaceId:'workspace',operation,args:{intent:intent(workspaceId)}}})});
  ask('t1','workspace');
- assert.deepEqual(events.at(-1),{type:'previewToken',requestId:'t1',intent:JSON.stringify(intent('workspace'))});
- assert.equal(bridge.previewToken('t1',{value:'request-token'}),true);
+ assert.deepEqual(events.at(-1),{type:'machineToken',requestId:'t1',operation:'previewToken',intent:JSON.stringify(intent('workspace'))});
+ assert.equal(bridge.machineToken('t1',{value:'request-token'}),true);
  assert.deepEqual([sent.at(-1).id,sent.at(-1).kind,sent.at(-1).payload],['t1','result',{value:'request-token'}]);
- assert.equal(bridge.previewToken('t1',{value:'again'}),false);
+ assert.equal(bridge.machineToken('t1',{value:'again'}),false);
  ask('t2','workspace');
- bridge.previewToken('t2',{value:{status:403,extra:'dropped'}});
+ bridge.machineToken('t2',{value:{status:403,extra:'dropped'}});
  assert.deepEqual(sent.at(-1).payload,{value:{status:403}});
  ask('t3','workspace');
- bridge.previewToken('t3',null);
- assert.deepEqual([sent.at(-1).kind,sent.at(-1).error.code],['error','preview_token_unavailable']);
+ bridge.machineToken('t3',null);
+ assert.deepEqual([sent.at(-1).kind,sent.at(-1).error.code],['error','machine_token_unavailable']);
  const before=events.length;
  ask('t4','other');
  ask('t5','workspace','saveSecret');
  assert.equal(events.length,before);
  assert.deepEqual(sent.slice(-2).map(e=>[e.id,e.kind]),[['t4','error'],['t5','error']]);
+ const historyIntent={workspaceId:'workspace',machineId:'m',sessionId:'s'};
+ const historyRequest={v:1,gen:1,kind:'request',id:'h1',method:'shareRequest',payload:{
+  workspaceId:'workspace',operation:'historyToken',args:{intent:historyIntent}
+ }};
+ globalThis.androidRuntimeMessage({type:'envelope',envelope:historyRequest});
+ assert.deepEqual(events.at(-1),{type:'machineToken',requestId:'h1',operation:'historyToken',intent:JSON.stringify(historyIntent)});
+ bridge.machineToken('h1',{value:'scoped-history-proof'});
+ assert.deepEqual(sent.at(-1).payload,{value:'scoped-history-proof'});
+ const historyEvents=events.length;
+ globalThis.androidRuntimeMessage({type:'envelope',envelope:{...historyRequest,id:'h2',payload:{
+  ...historyRequest.payload,args:{intent:{...historyIntent,workspaceId:'other'}}
+ }}});
+ assert.equal(events.length,historyEvents);
+ assert.equal(sent.at(-1).error.code,'unsupported_method');
  delete globalThis.androidRuntimeMessage;
 });
 test('preview controls forward to the shared runtime with their long deadlines',async()=>{
@@ -228,5 +246,40 @@ test('session writes satisfy the shared runtime contract, which rejects a missin
  for(const action of ['read','send'])
   assert.equal((await bridge.editSession({action,sessionId:'s',expectedUserTurnId:'t',...(action==='send'?{id:'u',text:'edited',retainedIds:[]}:{}),workspaceId:'workspace',userId:'user'})).state,'created');
  assert.equal((await bridge.forkSession({action:'send',sourceSessionId:'s',sourceTurnId:'t',targetSessionId:'11111111-1111-4111-8111-111111111112',workspaceId:'workspace',userId:'user'})).state,'created');
+ delete globalThis.androidRuntimeMessage;
+});
+
+test('status view commands, presets, read receipts and the read-only start satisfy the shared contract',async()=>{
+ const {build}=await import('esbuild');
+ const compiled=await build({entryPoints:[new URL('../vendor/cloud-runtime/src/contract/methods.ts',import.meta.url).pathname],bundle:true,platform:'node',format:'esm',write:false});
+ const {runtimeCalls}=await import('data:text/javascript;base64,'+Buffer.from(compiled.outputFiles[0].text).toString('base64'));
+ const sent=[];
+ // Answer as the shared channel does: params failing a method's schema are `invalid_params`.
+ const results={statusViewCommand:{writes:2},snoozePresets:{nowMs:1,presets:[{id:'oneHour',until:3600001,countdown:'1h'}]}};
+ const runtime={receive(text){const e=JSON.parse(text);if(e.kind!=='request')return;sent.push(e);
+  const spec=runtimeCalls[e.method];
+  const reply=e.method==='hello'?{...e,kind:'result',payload:{}}
+   :spec && spec.params.safeParse(e.payload).success?{...e,kind:'result',payload:results[e.method]??{}}
+   :{...e,kind:'error',payload:undefined,error:{code:spec?'invalid_params':'unsupported_method',retryable:false}};
+  globalThis.androidRuntimeMessage({type:'envelope',envelope:JSON.stringify(reply)});}};
+ const bridge=contractBridge(runtime,()=>{});
+ // A viewer's runtime is told so at start; the runtime then offers no status, pin or section action.
+ await bridge.start('workspace','user',true,true);
+ assert.equal(sent.find(e=>e.method==='start').payload.workspaceReadOnly,true);
+ await bridge.start('workspace','user',true);
+ assert.equal('workspaceReadOnly' in sent.filter(e=>e.method==='start').at(-1).payload,false);
+ assert.deepEqual(await bridge.markSessionRead({workspaceId:'workspace',sessionId:'s',lastReadAt:5}),{});
+ await assert.rejects(bridge.markSessionRead({workspaceId:'workspace',sessionId:'s'}),/invalid_params/);
+ // The planner command travels whole with the list it came from; the runtime plans and writes it.
+ const command={type:'move',sessionId:'s',to:{area:'pinned',sectionId:null},beforeId:'t'};
+ assert.deepEqual(await bridge.statusViewCommand({workspaceId:'workspace',command,scope:'mine'}),{writes:2});
+ assert.deepEqual(sent.at(-1).payload,{workspaceId:'workspace',command,scope:'mine'});
+ for(const native of [{type:'snooze',sessionId:'s',until:9,includeOpened:true},{type:'settle',sessionId:'s',includeOpened:false},{type:'moveToFocus',sessionId:'s',includeOpened:false},
+  {type:'setPinned',sessionId:'s',pinned:true},{type:'move',sessionId:'s',to:{area:'focus'},beforeId:null},{type:'createSection',sectionId:'x',name:'Ops'},
+  {type:'renameSection',sectionId:'x',name:'Ops 2'},{type:'deleteSection',sectionId:'x'},{type:'moveSection',sectionId:'x',beforeId:null}])
+  assert.deepEqual(await bridge.statusViewCommand({workspaceId:'workspace',command:native}),{writes:2},native.type);
+ // Runtime-only planner commands are refused at the boundary.
+ await assert.rejects(bridge.statusViewCommand({workspaceId:'workspace',command:{type:'touchOnSend',sessionId:'s'}}),/invalid_params/);
+ assert.equal((await bridge.snoozePresets({})).presets[0].until,3600001);
  delete globalThis.androidRuntimeMessage;
 });

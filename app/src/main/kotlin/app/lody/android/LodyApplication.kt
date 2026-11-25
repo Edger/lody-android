@@ -22,6 +22,20 @@ open class LodyApplication : Application() {
         private set
     lateinit var creation: app.lody.android.create.CreationService
     val submissions by lazy { app.lody.android.create.CreationSubmissions(applicationScope) { scope, request -> creation.create(scope, request) } }
+    val sessionOutbox by lazy {
+        app.lody.android.chat.SessionOutbox(
+            this, applicationScope, cloud.state,
+            turnQuota = { scope, sessionId ->
+                runtimeOwner.use(scope) { (it.execute(RuntimeCommand.TurnQuota(sessionId)) as RuntimeResult.Sent).takeIf { sent -> sent.state == "not_sent" }?.reason }
+            },
+            upload = { scope, sessionId, items ->
+                if (items.isEmpty()) emptyList() else attachments.upload(scope, sessionId, items)
+            },
+            send = { scope, request ->
+                runtimeOwner.use(scope) { it.execute(RuntimeCommand.SendText(request)) as RuntimeResult.Sent }
+            },
+        )
+    }
     /** In-memory cache keeping active web and device previews alive across conversation switches; cleared on logout. */
     val previewCache by lazy { app.lody.android.chat.PreviewCache(applicationScope) }
     lateinit var pullRequests: app.lody.android.chat.PullRequestWriter
@@ -32,6 +46,7 @@ open class LodyApplication : Application() {
         private set
     /** Reads agent images in conversations with the verified account. */
     lateinit var sessionImages: app.lody.android.chat.SessionImageReader
+    lateinit var sessionFiles: app.lody.android.chat.SessionFileReader
         private set
     lateinit var members: WorkspaceMembers
         private set
@@ -44,8 +59,9 @@ open class LodyApplication : Application() {
     lateinit var schedules: app.lody.android.schedules.ScheduleService
         private set
     private var prepared: Pair<RuntimeScope, ShortLivedGrant>? = null
+    private lateinit var memberCache: app.lody.android.auth.WorkspaceMemberStore
     private val shortcutCloud by lazy { app.lody.android.cloud.PromptShortcutCloud() }
-    private val previewTokens by lazy { app.lody.android.cloud.PreviewTokens() }
+    private val machineRequestTokens by lazy { app.lody.android.cloud.MachineRequestTokens() }
     private val workspaceBilling by lazy { app.lody.android.cloud.WorkspaceBilling() }
     protected open fun createRuntime(scope: RuntimeScope): CloudRuntime {
         val ready = prepared?.takeIf { it.first == scope }
@@ -56,10 +72,13 @@ open class LodyApplication : Application() {
                 catch (error: AuthFailure) { throw app.lody.android.runtime.RuntimeException(RuntimeFault(error.code, if (error.code == "network_unavailable") RuntimeErrorCategory.NETWORK else RuntimeErrorCategory.AUTH)) }
             }, app.lody.android.runtime.ShortcutCloudProvider { key, operation, args ->
                 account.withVerifiedAccount(key) { credential -> shortcutCloud.call(credential, key.workspaceId, operation, args) }
-            }, app.lody.android.runtime.PreviewTokenProvider { key, intent ->
-                account.withVerifiedAccount(key) { credential -> previewTokens.mint(credential, key, intent) }
+            }, app.lody.android.runtime.MachineTokenProvider { key, operation, intent ->
+                account.withVerifiedAccount(key) { credential -> machineRequestTokens.mint(credential, key, operation, intent) }
             }, app.lody.android.runtime.BillingProvider { key ->
                 account.withVerifiedAccount(key) { credential -> workspaceBilling.entitlement(credential, key.workspaceId) }
+            }, workspaceReadOnly = { key ->
+                // The cached member list's own role; a role change applies from the next runtime start.
+                memberCache.readMembers(key)?.firstOrNull { it.id == key.accountId }?.readOnly == true
             })
         }
         return createOfflineRuntime(scope)
@@ -71,6 +90,7 @@ open class LodyApplication : Application() {
         app.lody.android.home.AvatarImages.initialize(this)
         runtimeOwner = RuntimeOwner(::createRuntime, Dispatchers.Main.immediate, ::admitRuntime)
         val cache = AtomicCatalogStore(this)
+        memberCache = cache
         settingsCache = cache
         val scheduleCache = app.lody.android.schedules.ScheduleDisplayCache(cache)
         val branches = app.lody.android.create.GitHubBranches()
@@ -104,9 +124,14 @@ open class LodyApplication : Application() {
         sessionImages = app.lody.android.chat.SessionImageReader { scope, sessionId, image, width ->
             account.withVerifiedAccount(scope) { credential -> imageReads.read(credential.token, scope.workspaceId, image.storageSessionId ?: sessionId, image.id, width) }
         }
+        val fileReads = app.lody.android.chat.SessionFileHttp()
+        sessionFiles = app.lody.android.chat.SessionFileReader { scope, sessionId, file, directory ->
+            account.withVerifiedAccount(scope) { credential -> fileReads.download(credential.token, scope.workspaceId, file.storageSessionId ?: sessionId, file, directory) }
+        }
         account = AccountController(CloudAuthHttp(WorkspaceModePins(java.io.File(noBackupFilesDir, "workspace-modes" + BackendEnvironment.storageSuffix + ".json")), OkHttpAuthTransport()), KeystoreCredentialStore(this), applicationScope, cache) {
             if (::notifications.isInitialized) notifications.clear()
             app.lody.android.chat.ComposerDrafts.clear(this)
+            sessionOutbox.clear()
             scheduleCache.invalidate()
             previewCache.clearAll()
             prepared = null

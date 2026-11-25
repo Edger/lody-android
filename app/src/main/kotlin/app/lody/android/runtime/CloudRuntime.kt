@@ -17,6 +17,17 @@ interface CloudRuntime {
 data class RuntimeScope(val accountId: String, val workspaceId: String) {
     init { require(accountId.isNotBlank() && workspaceId.isNotBlank()); require(accountId.length <= 128 && workspaceId.length <= 128) }
 }
+/**
+ * What an all-changes or file diff compares. [Branch] is the merge base against the working tree
+ * (committed and uncommitted work) and is the machine default, so [wire] is null and it is not sent
+ * to machines that predate the `scope` field; [Uncommitted] is HEAD against the working tree
+ * (staged, unstaged and untracked work).
+ */
+enum class DiffScope(val wire: String?) {
+    Branch(null),
+    Uncommitted("uncommitted"),
+}
+
 sealed interface RuntimeCommand {
     data class ProviderDetail(val machineId: String, val id: String) : RuntimeCommand
     /** [readModelOptions] switches the agent through every model (Refresh models and modes). */
@@ -31,6 +42,16 @@ sealed interface RuntimeCommand {
     data class SetTabClosed(val id: String, val closed: Boolean) : RuntimeCommand
     /** Archives or unarchives a conversation (upstream `archiveSession`); a write, never replayed. */
     data class ArchiveSession(val id: String, val archived: Boolean) : RuntimeCommand
+    /**
+     * One Status view or pin-section change (runtime `statusViewCommand`): the runtime plans it
+     * against its replica with the shared planner and writes. [scope] is the list the gesture
+     * happened in (`move.beforeId` resolves against it). A write, never replayed.
+     */
+    data class StatusView(val command: StatusViewCommand, val scope: StatusViewScope? = null) : RuntimeCommand
+    /** The four Later presets resolved on the runtime's synced clock (`snoozePresets`). Read only. */
+    data object SnoozePresets : RuntimeCommand
+    /** Records that the conversation was read up to [lastReadAt] (upstream `markSessionRead`; monotonic). */
+    data class MarkRead(val id: String, val lastReadAt: Long) : RuntimeCommand
     /** [billing]: a Tab is a session, so the free-plan session quota applies (null fails open). */
     data class CreateTab(val parentId: String, val id: String, val title: String, val billing: org.json.JSONObject? = null) : RuntimeCommand
     /** [includeOffline]: schedule targets, every readable computer's agents; new chats keep online agents. */
@@ -53,6 +74,10 @@ sealed interface RuntimeCommand {
     data class ItemDetail(val sessionId: String, val entryId: String, val itemId: String) : RuntimeCommand
     /** One changed file's diff for one turn, from the session's computer. Read only. */
     data class TurnDiff(val sessionId: String, val entryId: String, val path: String) : RuntimeCommand
+    /** Every file the working tree changed, from the session's computer (upstream `workspaceChanges`). Read only. */
+    data class WorkspaceChanges(val sessionId: String, val scope: DiffScope? = null) : RuntimeCommand
+    /** One changed file's current diff against its base (upstream `fileDiff`). Read only. */
+    data class FileDiff(val sessionId: String, val path: String, val scope: DiffScope? = null) : RuntimeCommand
     /**
      * One folder of the session's local project ([relativePath] from the project root, "" for the
      * root), from the session's computer (upstream `listDir`). Read only.
@@ -136,8 +161,12 @@ sealed interface RuntimeResult {
     /** Upstream send state (`sent` / `queued` / `not_sent` / `unknown`); a machine ACK is delivery only. */
     data class Sent(val state: String, val reason: String? = null) : RuntimeResult
     data object Accepted : RuntimeResult
+    data class SnoozePresets(val value: List<SnoozePreset>) : RuntimeResult
+    /** Session metadata patches and pin-section rows a Status view command wrote; 0 is refused or a no-op. */
+    data class StatusViewWrites(val writes: Int) : RuntimeResult
     data class Detail(val value: StepDetail) : RuntimeResult
     data class Diff(val value: FileDiff) : RuntimeResult
+    data class WorkspaceChanges(val value: app.lody.android.runtime.WorkspaceChanges) : RuntimeResult
     data class Directory(val value: DirectoryListing) : RuntimeResult
     data class File(val value: FileContent) : RuntimeResult
     data class Pong(val healthy: Boolean) : RuntimeResult
@@ -160,6 +189,8 @@ data class CatalogPullRequest(
 data class CatalogSession(
     val id: String, val machineId: String, val projectId: String, val title: String, val status: String, val archived: Boolean, val pinned: Boolean, val createdAt: String,
     val branchName: String? = null, val lastMessageAt: Long? = null, val lastReadAt: Long? = null, val awaitingUserSince: Long? = null,
+    /** Status view metadata (display only; the runtime's layout decides tiers and order). */
+    val orderKey: String? = null, val pinSectionId: String? = null, val snoozedUntil: Long? = null, val settledAt: Long? = null, val focusRestoredAt: Long? = null,
     val pullRequests: List<CatalogPullRequest> = emptyList(),
     /** The owning Lody user (session meta `userId`); null from caches written before the field. */
     val userId: String? = null,
@@ -234,6 +265,10 @@ data class CatalogSnapshot(
     val machineEmulators: Map<String, String> = emptyMap(),
     /** Computer id to numeric protocol capability versions advertised by its CLI. */
     val machineCapabilities: Map<String, Map<String, Int>> = emptyMap(),
+    /** The shared runtime's Status view layout for both scopes; null from older runtimes and caches. */
+    val statusView: StatusView? = null,
+    /** Workspace pin sections, in order. */
+    val pinSections: List<PinSection> = emptyList(),
 )
 /**
  * One transcript turn. [timestamp] is ISO-8601; [status] is upstream's (`seen` once the agent
@@ -241,6 +276,13 @@ data class CatalogSnapshot(
  * [startedAt] / [endedAt] (epoch ms) time an agent turn; [model] names its model.
  */
 data class MessageReference(val start: Int, val end: Int)
+/**
+ * A quote block in a user turn's shown text (`message_quote` span, quoteVersion 1, read by the
+ * runtime as Web `readMessageQuote`): its range and the decoded, read-only snapshot.
+ */
+data class MessageQuoteBlock(val start: Int, val end: Int, val snapshot: String)
+/** A composer quote card: the read-only snapshot of a quoted passage and the reader's comment on it. */
+data class MessageQuoteCard(val id: String, val snapshot: String, val comment: String)
 
 data class SessionMessage(
     val id: String,
@@ -248,6 +290,8 @@ data class SessionMessage(
     val text: String,
     val streaming: Boolean,
     val references: List<MessageReference> = emptyList(),
+    /** A user turn's quote blocks in [text], in order. */
+    val quotes: List<MessageQuoteBlock> = emptyList(),
     val timestamp: String? = null,
     val status: String = "",
     val userId: String? = null,
@@ -300,6 +344,13 @@ sealed interface TurnItem {
         /** The step's permission request, when it has one. */
         val permission: ToolPermission? = null,
     ) : TurnItem
+    /**
+     * Context compaction (a `tool_call` with `activityKind: context_compaction`, web
+     * `isProcessStatusToolCall`): one status line, never a step or part of an activity group.
+     */
+    data class Compaction(override val id: String, val status: String) : TurnItem {
+        val active: Boolean get() = status == "pending" || status == "in_progress"
+    }
     /** A proposed plan (Markdown); never folded. [streaming] while the agent still writes it. */
     data class ProposedPlan(override val id: String, val markdown: String, val streaming: Boolean = false) : TurnItem
     /** The agent's checklist (`plan`); never folded. */
@@ -313,7 +364,12 @@ sealed interface TurnItem {
      * A file the agent shared (`lody_upload_files`, web `SessionFileCard`): its name, type and
      * size; never folded.
      */
-    data class File(override val id: String, val fileName: String, val mimeType: String? = null, val sizeBytes: Long? = null) : TurnItem
+    data class File(
+        override val id: String, val fileName: String, val mimeType: String? = null, val sizeBytes: Long? = null,
+        val fileId: String = "", val storageSessionId: String? = null, val transport: String? = null,
+    ) : TurnItem {
+        val ref: app.lody.android.chat.SessionFileRef get() = app.lody.android.chat.SessionFileRef(fileId, fileName, storageSessionId, transport, sizeBytes, mimeType)
+    }
     /** A failure or notice the turn ended with; never folded. */
     data class Notice(override val id: String, val text: String, val failure: Boolean) : TurnItem
     /**
@@ -366,6 +422,8 @@ data class SendTextRequest(
     val configOptionValues: Map<String, Any> = emptyMap(),
     /** Steer the running reply instead of queueing (the "Guide" preference, when the agent can steer). */
     val guide: Boolean = false,
+    /** Quote cards, in order; the runtime appends them after [text] in the Web wire format. */
+    val quotes: List<MessageQuoteCard> = emptyList(),
 )
 /** What a turn says about its Agent Role: inherit the latest turn's, an explicit None, or a Role. */
 sealed interface RoleSend {
@@ -373,7 +431,15 @@ sealed interface RoleSend {
     data object None : RoleSend
     data class Role(val id: String) : RoleSend
 }
-data class MessageAttachment(val name: String, val image: Boolean, val turnImage: TurnImage? = null)
+/**
+ * A turn's attachment; [turnImage] is the addressable picture and [file] an uploaded file the
+ * reader can open.
+ */
+data class MessageAttachment(
+    val name: String, val image: Boolean,
+    val turnImage: TurnImage? = null,
+    val file: app.lody.android.chat.SessionFileRef? = null,
+)
 /**
  * The latest user turn's run config (runtime session `composer`), what the next turn would use.
  * [roleKnown] is false when the turn says nothing about a Role; then [agentRoleId] null is
@@ -396,6 +462,8 @@ data class SessionSnapshot(
     val historyLoading: Boolean = false,
     /** User turns plus queued inputs, as the free-plan turn quota counts them; null when unknown. */
     val billableTurnCount: Int? = null,
+    val sendReady: Boolean = status == "live",
+    val controlReady: Boolean = status == "live",
 )
 sealed interface RuntimeEvent {
     data class ProvidersChanged(val machineId: String) : RuntimeEvent
@@ -411,7 +479,7 @@ sealed interface RuntimeEvent {
     /** The runtime asks the native host to make one prompt-shortcut Convex call (iOS `shortcutCloud`). */
     data class ShortcutCloudRequested(val requestId: String, val operation: String, val args: String) : RuntimeEvent
     /** The runtime asks the native host to mint a preview proof's request token for [intent] (JSON). */
-    data class PreviewTokenRequested(val requestId: String, val intent: String) : RuntimeEvent
+    data class MachineTokenRequested(val requestId: String, val operation: String, val intent: String) : RuntimeEvent
 }
 /** Stamped at source receipt, before any coroutine buffering. */
 data class RuntimeEmission(val generation: Long, val event: RuntimeEvent)
@@ -428,7 +496,7 @@ fun interface ShortcutCloudProvider { suspend fun call(scope: RuntimeScope, oper
  * Mints one preview-control request token for [scope] with the verified account: the token string,
  * or the HTTP status (Int) the backend refused with; throws on any other failure.
  */
-fun interface PreviewTokenProvider { suspend fun mint(scope: RuntimeScope, intent: org.json.JSONObject): Any }
+fun interface MachineTokenProvider { suspend fun mint(scope: RuntimeScope, operation: String, intent: org.json.JSONObject): Any }
 class ShortLivedGrant(val token: String, val gatewayBaseUrl: String, val expiresIn: Int, private val receivedAtNanos: Long = System.nanoTime()) {
     init { require(token.isNotBlank()); require(expiresIn in 1..3600) }
     fun remainingSeconds(nowNanos: Long = System.nanoTime()): Int =
@@ -518,6 +586,23 @@ sealed interface StepBlock {
 data class FileChange(val path: String, val added: Int, val removed: Int)
 
 /**
+ * One file the working tree changed (upstream `workspaceChanges`); [added] / [removed] are absent
+ * when the computer deferred the file's diff, and [kind] is `added` / `deleted` / `modified` when known.
+ */
+data class WorkspaceChange(
+    val path: String,
+    val added: Int? = null,
+    val removed: Int? = null,
+    val kind: String? = null,
+)
+
+/** The working tree's changed files, or why the computer could not list them (upstream `workspaceChanges`). */
+sealed interface WorkspaceChanges {
+    data class Ready(val files: List<WorkspaceChange>) : WorkspaceChanges
+    data class Unavailable(val reason: String) : WorkspaceChanges
+}
+
+/**
  * A file's text before and after a turn (upstream `turnDiff`). [oldText] / [newText] are null for a
  * side that is not text (binary, too large); [unavailable] carries the computer's reason when it
  * could not produce the diff (offline, file gone).
@@ -529,6 +614,8 @@ data class FileDiff(
     val added: Int? = null,
     val removed: Int? = null,
     val unavailable: String? = null,
+    /** A side the computer refused to send because it exceeds its size limit. */
+    val tooLarge: Boolean = false,
 )
 
 /** One folder of a local project (upstream `DirectoryListing`): folders first, then files, by name. */
@@ -550,6 +637,8 @@ data class MentionCandidate(
     val path: String, val name: String, val kind: String, val subtitle: String = "", val insertText: String? = null,
     /** A Role's emoji: it leads the row instead of an icon (as the run-config Role row). */
     val emoji: String? = null,
+    /** A prompt shortcut's listed revision; a body read ahead belongs to exactly this revision. */
+    val revision: String? = null,
 ) {
     /**
      * Folders browse with the files; prompt shortcuts (listed with the agent's commands, inserting

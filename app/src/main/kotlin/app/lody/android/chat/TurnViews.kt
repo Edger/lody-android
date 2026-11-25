@@ -13,6 +13,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.shadow
@@ -21,10 +24,14 @@ import androidx.compose.ui.draw.drawBehind
 import app.lody.android.runtime.StepBlock
 import app.lody.android.runtime.StepDetail
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -49,12 +56,16 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.lody.android.R
+import app.lody.android.designsystem.LodyElevations
 import app.lody.android.designsystem.LodyIconSize
 import app.lody.android.designsystem.LodyIcons
+import app.lody.android.designsystem.LodySize
 import app.lody.android.designsystem.LodySpacing
 import app.lody.android.designsystem.LodyTheme
+import app.lody.android.designsystem.shadow
 import app.lody.android.runtime.TurnItem
 
 /**
@@ -106,7 +117,7 @@ private fun LazyListScope.content(
     respond: PermissionResponder?,
 ) {
     when (val value = block.item) {
-        is TurnItem.Text -> prose(block.key, entry.prose[value.id], secondary = false)
+        is TurnItem.Text -> prose(block.key, entry.prose[value.id], secondary = false, quotable = true)
         is TurnItem.ProposedPlan -> proposedPlan(entry, value, block.key, open, toggle)
         is TurnItem.Checklist -> item(key = block.key, contentType = "checklist") { Checklist(value, Modifier.animateItem()) }
         is TurnItem.Notice -> item(key = block.key, contentType = "notice") { Notice(value, Modifier.animateItem()) }
@@ -117,7 +128,33 @@ private fun LazyListScope.content(
             if (value.kind == "switch_mode" && (value.plan != null || value.permission != null)) planExit(entry, value, block.key, open, toggle, details, respond)
             else step(entry, value, block.key, entry.working && value.status == "in_progress", open, toggle, details, respond)
         is TurnItem.Thought -> prose(block.key, entry.prose[value.id], secondary = true)
+        is TurnItem.Compaction -> item(key = block.key, contentType = "compaction") { Compaction(value, entry.working && value.active, Modifier.animateItem()) }
         is TurnItem.Task -> Unit
+    }
+}
+
+/** Web `ToolCallBlock` compaction status: a spinner and pulse while it runs, then its outcome, no warning tone. */
+@Composable
+private fun Compaction(item: TurnItem.Compaction, live: Boolean, modifier: Modifier = Modifier) {
+    val colors = LodyTheme.colors
+    val label = when {
+        live -> R.string.chat_compacting
+        item.status == "failed" -> R.string.chat_compaction_failed
+        else -> R.string.chat_compacted
+    }
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = TranscriptMargin, vertical = LodySpacing.xxs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
+    ) {
+        if (live) androidx.compose.material3.CircularProgressIndicator(Modifier.size(LodyIconSize.xs), color = colors.textSecondary, strokeWidth = 1.5.dp)
+        Text(
+            stringResource(label),
+            style = LodyTheme.typography.footnote,
+            color = colors.textSecondary,
+            maxLines = 1,
+            modifier = if (live) Modifier.shimmer() else Modifier,
+        )
     }
 }
 
@@ -152,19 +189,20 @@ private fun LazyListScope.step(
     stepPermission(entry, tool, key, details, respond)
 }
 
-/** Each top-level Markdown block is its own lazy row, so streaming re-renders only the tail. */
-private fun LazyListScope.prose(key: String, markdown: MarkdownBlocks?, secondary: Boolean) {
+/**
+ * Each top-level Markdown block is its own lazy row, so streaming re-renders only the tail. An
+ * answer's text ([quotable]) is selectable within its block, with Quote in the selection menu.
+ */
+private fun LazyListScope.prose(key: String, markdown: MarkdownBlocks?, secondary: Boolean, quotable: Boolean = false) {
     val blocks = markdown?.blocks ?: return
     blocks.forEachIndexed { index, text ->
         item(key = "$key#$index", contentType = "markdown") {
-            MarkdownBlock(
-                text,
-                Modifier
-                    .animateItem()
-                    .padding(horizontal = TranscriptMargin)
-                    .padding(bottom = LodySpacing.md),
-                secondary = secondary,
-            )
+            val modifier = Modifier
+                .animateItem()
+                .padding(horizontal = TranscriptMargin)
+                .padding(bottom = LodySpacing.md)
+            if (quotable) QuotableSelection(modifier) { MarkdownBlock(text, secondary = secondary) }
+            else MarkdownBlock(text, modifier, secondary = secondary)
         }
     }
 }
@@ -240,18 +278,20 @@ internal fun ToolStep(
     val file = item.path?.substringAfterLast('/')?.takeIf { it.isNotBlank() && item.kind in FileKinds }
     // A title already opening with a capitalized word is an authored label and keeps it (web).
     val authored = item.title.matches(Regex("^[A-Z][a-z]+[\\s:(].*", RegexOption.DOT_MATCHES_ALL))
+    // A title relative to the working directory collapses its run of "../" into "…/" (iOS #152).
+    val title = compactParentHops(item.title)
     val text = buildAnnotatedString {
         when {
             file != null -> {
                 verb?.let { withStyle(SpanStyle(color = colors.textSecondary)) { append(it); append(' ') } }
                 withStyle(SpanStyle(color = colors.textTertiary)) { append(file) }
             }
-            verb != null && !authored && item.title.isNotBlank() -> {
+            verb != null && !authored && title.isNotBlank() -> {
                 withStyle(SpanStyle(color = colors.textSecondary)) { append(verb); append(' ') }
                 val command = item.kind == "execute" || item.kind == "bash"
-                withStyle(SpanStyle(color = colors.textTertiary, fontFamily = if (command) type.code.fontFamily else null)) { append(item.title) }
+                withStyle(SpanStyle(color = colors.textTertiary, fontFamily = if (command) type.code.fontFamily else null)) { append(title) }
             }
-            else -> withStyle(SpanStyle(color = colors.textSecondary)) { append(item.title.ifBlank { verb.orEmpty() }) }
+            else -> withStyle(SpanStyle(color = colors.textSecondary)) { append(title.ifBlank { verb.orEmpty() }) }
         }
     }
     val state = expanded?.let { stringResource(if (it) R.string.home_tree_expanded else R.string.home_tree_collapsed) }
@@ -259,9 +299,10 @@ internal fun ToolStep(
     Row(
         modifier
             .fillMaxWidth()
+            // Every step row keeps one height whether or not it opens a detail (iOS #152).
+            .heightIn(min = 32.dp)
             .then(
                 if (expanded != null) Modifier
-                    .heightIn(min = 32.dp)
                     .clickable(role = Role.Button) { onToggle(!expanded) }
                     .semantics { stateDescription = state.orEmpty() }
                 else Modifier,
@@ -294,6 +335,10 @@ internal fun ToolStep(
 }
 
 private val FileKinds = setOf("read", "edit", "write", "delete", "move")
+
+private val ParentHops = Regex("(?:\\.\\./){2,}")
+
+internal fun compactParentHops(text: String): String = text.replace(ParentHops, "…/")
 
 @Composable
 private fun stepVerb(kind: String, running: Boolean): String? {
@@ -577,6 +622,9 @@ private fun FilesRow(files: List<app.lody.android.runtime.FileChange>, modifier:
     )
 }
 
+/** A changed file as a sheet row; null counts mean the computer reported no numbers for it. */
+private data class ChangedFile(val path: String, val added: Int? = null, val removed: Int? = null)
+
 /**
  * A turn's changed files in a near full-screen native sheet, the same shape as [TasksSheet]: the
  * title and totals, then the files as one card of ruled rows (name in code type, folder, +/−); a
@@ -591,72 +639,276 @@ internal fun FilesSheet(
     loadDiff: (suspend (entryId: String, path: String) -> app.lody.android.runtime.FileDiff)?,
     onDismiss: () -> Unit,
 ) {
+    val sheet = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheet,
+        containerColor = LodyTheme.colors.bgBase,
+        dragHandle = { SheetGrabber() },
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+    ) {
+        ChangedFilesContent(
+            files.map { ChangedFile(it.path, it.added, it.removed) },
+            loadDiff?.let { loader -> { path: String -> loader(entryId, path) } },
+            Modifier.fillMaxWidth().fillMaxHeight(0.92f),
+        )
+    }
+}
+
+/**
+ * The working tree's changed files, the same sheet as [FilesSheet], loaded from the session's
+ * computer when it opens; an unavailable list says why instead of showing an empty one, and the
+ * top-right refresh retries it without closing the sheet.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+internal fun WorkspaceChangesSheet(
+    loadChanges: suspend () -> app.lody.android.runtime.WorkspaceChanges,
+    loadDiff: suspend (path: String) -> app.lody.android.runtime.FileDiff,
+    onDismiss: () -> Unit,
+    /** The HEAD-against-worktree comparison (`仅未提交`), whose empty list is a real answer. */
+    uncommitted: Boolean = false,
+    /** A list the caller already loaded for this scope; reused instead of a second request. */
+    initial: app.lody.android.runtime.WorkspaceChanges.Ready? = null,
+) {
+    val colors = LodyTheme.colors
+    val sheet = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var attempt by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var state by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<WorkspaceFiles>(
+            initial?.let { changes ->
+                WorkspaceFiles.Ready(changes.files.map { ChangedFile(it.path, it.added, it.removed) })
+            } ?: WorkspaceFiles.Loading,
+        )
+    }
+    var diffOpen by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(attempt) {
+        if (attempt == 0 && initial != null) return@LaunchedEffect
+        diffOpen = false
+        state = WorkspaceFiles.Loading
+        state = try {
+            when (val changes = loadChanges()) {
+                is app.lody.android.runtime.WorkspaceChanges.Ready ->
+                    WorkspaceFiles.Ready(changes.files.map { ChangedFile(it.path, it.added, it.removed) })
+                is app.lody.android.runtime.WorkspaceChanges.Unavailable -> WorkspaceFiles.Unavailable(changes.reason)
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { WorkspaceFiles.Unavailable(null) }
+    }
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheet,
+        containerColor = colors.bgBase,
+        // The list and the diff run to the sheet's own edges; the final list item keeps itself
+        // clear of the navigation bar, so rows pass beneath it instead of stopping above it.
+        dragHandle = { SheetGrabber() },
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+    ) {
+        Box(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+            when (val current = state) {
+                WorkspaceFiles.Loading -> Box(
+                    Modifier.fillMaxSize().padding(top = SheetHeaderRowHeight),
+                    contentAlignment = Alignment.Center,
+                ) { app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.md), color = colors.iconTertiary) }
+                is WorkspaceFiles.Unavailable -> Column(
+                    Modifier.fillMaxSize().padding(top = SheetHeaderRowHeight)
+                        .padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+                    verticalArrangement = Arrangement.spacedBy(LodySpacing.sm),
+                ) {
+                    Text(
+                        stringResource(workspaceUnavailableMessage(current.reason)),
+                        style = LodyTheme.typography.subhead, color = colors.textSecondary,
+                    )
+                }
+                is WorkspaceFiles.Ready -> if (uncommitted && current.files.isEmpty()) {
+                    Text(
+                        stringResource(R.string.chat_diff_no_uncommitted_changes),
+                        style = LodyTheme.typography.subhead, color = colors.textSecondary,
+                        modifier = Modifier.fillMaxSize().padding(top = SheetHeaderRowHeight)
+                            .padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+                    )
+                } else ChangedFilesContent(
+                    current.files,
+                    loadDiff,
+                    Modifier.fillMaxSize(),
+                    listTopPadding = SheetHeaderRowHeight,
+                ) { diffOpen = it }
+            }
+            if (!diffOpen) WorkspaceSheetHeader(
+                title = stringResource(if (uncommitted) R.string.workspace_changes_title_uncommitted else R.string.workspace_changes_title),
+                refreshEnabled = state !is WorkspaceFiles.Loading,
+                onRefresh = { attempt++ },
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
+    }
+}
+
+/** One control-height title row plus the gap below it, which the floating headers reserve. */
+private val SheetHeaderRowHeight = LodySize.controlLg + LodySpacing.sm
+
+/**
+ * The sheet's grab pill. It lives in the sheet's `dragHandle` slot, so dragging it moves the
+ * sheet; the title below it floats over the scrolling list on the conversation header's fade.
+ */
+@Composable
+private fun SheetGrabber() {
+    Box(
+        Modifier.padding(top = LodySpacing.xl, bottom = LodySpacing.sm),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.size(width = LodySize.controlSm, height = LodySpacing.xs)
+                .clip(CircleShape)
+                .background(LodyTheme.colors.borderStrong),
+        )
+    }
+}
+
+/**
+ * The floating sheet title over the scrolling list, on the same fading page-colour backdrop as
+ * the conversation header, so rows read beneath it.
+ */
+@Composable
+private fun WorkspaceSheetHeader(
+    title: String,
+    refreshEnabled: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
-    val sheet = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    Row(
+        modifier.fillMaxWidth().pageHeaderFade()
+            .padding(horizontal = TranscriptMargin).padding(bottom = LodySpacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.weight(1f).padding(start = LodySize.controlLg),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(title, style = type.headline, color = colors.textPrimary)
+        }
+        WorkspaceRefreshButton(enabled = refreshEnabled, onClick = onRefresh)
+    }
+}
+
+/** iOS's navigation-bar refresh: a round raised button, disabled while the list loads. */
+@Composable
+private fun WorkspaceRefreshButton(enabled: Boolean, onClick: () -> Unit) {
+    val colors = LodyTheme.colors
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(LodySize.controlLg)) {
+        Box(
+            Modifier.size(LodySize.controlMd)
+                .dropShadow(CircleShape, LodyElevations.sm.shadow())
+                .clip(CircleShape)
+                .background(colors.bgOverlay)
+                .border(0.5.dp, colors.borderSubtle, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                LodyIcons.Refresh,
+                contentDescription = stringResource(R.string.workspace_changes_refresh),
+                tint = if (enabled) colors.iconPrimary else colors.iconTertiary,
+                modifier = Modifier.size(LodyIconSize.md),
+            )
+        }
+    }
+}
+
+private sealed interface WorkspaceFiles {
+    data object Loading : WorkspaceFiles
+    data class Unavailable(val reason: String?) : WorkspaceFiles
+    data class Ready(val files: List<ChangedFile>) : WorkspaceFiles
+}
+
+/** The file list and the slide to one file's diff, shared by the turn and working-tree sheets. */
+@Composable
+private fun ChangedFilesContent(
+    files: List<ChangedFile>,
+    loadDiff: (suspend (path: String) -> app.lody.android.runtime.FileDiff)?,
+    modifier: Modifier = Modifier,
+    /** What the sheet's floating title covers; 0 when the sheet has no title over the list. */
+    listTopPadding: Dp = 0.dp,
+    onDiffShown: (Boolean) -> Unit = {},
+) {
+    val colors = LodyTheme.colors
+    val type = LodyTheme.typography
     var shown by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf<String?>(null) }
     androidx.activity.compose.BackHandler(enabled = shown != null) { shown = null }
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, containerColor = colors.bgBase) {
-        androidx.compose.animation.AnimatedContent(
-            targetState = shown,
-            transitionSpec = {
-                val forward = targetState != null
-                (androidx.compose.animation.slideInHorizontally { width -> if (forward) width / 3 else -width / 3 } + androidx.compose.animation.fadeIn())
-                    .togetherWith(androidx.compose.animation.slideOutHorizontally { width -> if (forward) -width / 3 else width / 3 } + androidx.compose.animation.fadeOut())
-            },
-            label = "files-sheet",
-        ) { path ->
-            val file = path?.let { wanted -> files.firstOrNull { it.path == wanted } }
-            if (file != null && loadDiff != null) {
-                DiffPage(entryId, file, loadDiff) { shown = null }
-                return@AnimatedContent
+    val showingDiff = loadDiff != null && shown?.let { path -> files.any { it.path == path } } == true
+    androidx.compose.runtime.LaunchedEffect(showingDiff) { onDiffShown(showingDiff) }
+    androidx.compose.animation.AnimatedContent(
+        targetState = shown,
+        modifier = modifier,
+        transitionSpec = {
+            val forward = targetState != null
+            (androidx.compose.animation.slideInHorizontally { width -> if (forward) width / 3 else -width / 3 } + androidx.compose.animation.fadeIn())
+                .togetherWith(androidx.compose.animation.slideOutHorizontally { width -> if (forward) -width / 3 else width / 3 } + androidx.compose.animation.fadeOut())
+        },
+        label = "files-sheet",
+    ) { path ->
+        val file = path?.let { wanted -> files.firstOrNull { it.path == wanted } }
+        if (file != null && loadDiff != null) {
+            DiffPage(file.path, file.added, file.removed, loadDiff) { shown = null }
+            return@AnimatedContent
+        }
+        val totalsKnown = files.isNotEmpty() && files.all { it.added != null && it.removed != null }
+        androidx.compose.foundation.lazy.LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = listTopPadding),
+        ) {
+            item(key = "title") {
+                Row(
+                    Modifier.padding(horizontal = TranscriptMargin).padding(bottom = LodySpacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
+                ) {
+                    Text(pluralStringResource(R.plurals.chat_files_count, files.size, files.size), style = type.headline, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                    if (totalsKnown) {
+                        val digits = type.subhead.copy(fontFeatureSettings = "tnum")
+                        Text("+${files.sumOf { it.added ?: 0 }}", style = digits, color = colors.diffAddedText)
+                        Text("−${files.sumOf { it.removed ?: 0 }}", style = digits, color = colors.diffRemovedText)
+                    }
+                }
             }
-            androidx.compose.foundation.lazy.LazyColumn(
-                Modifier.fillMaxWidth().fillMaxHeight(0.92f),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = LodySpacing.xl),
-            ) {
-                item(key = "title") {
+            files.forEachIndexed { index, file ->
+                item(key = file.path) {
+                    val segment = when {
+                        files.size == 1 -> Segment.Only
+                        index == 0 -> Segment.First
+                        index == files.lastIndex -> Segment.Last
+                        else -> Segment.Middle
+                    }
                     Row(
-                        Modifier.padding(horizontal = TranscriptMargin).padding(bottom = LodySpacing.md),
+                        Modifier.animateItem().cardSegment(segment).fillMaxWidth().heightIn(min = 52.dp)
+                            .then(if (loadDiff != null) Modifier.clickable(role = Role.Button) { shown = file.path } else Modifier)
+                            .padding(horizontal = LodySpacing.md, vertical = LodySpacing.sm),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
                     ) {
-                        Text(pluralStringResource(R.plurals.chat_files_count, files.size, files.size), style = type.headline, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                        val digits = type.subhead.copy(fontFeatureSettings = "tnum")
-                        Text("+${files.sumOf { it.added }}", style = digits, color = colors.diffAddedText)
-                        Text("−${files.sumOf { it.removed }}", style = digits, color = colors.diffRemovedText)
-                    }
-                }
-                files.forEachIndexed { index, file ->
-                    item(key = file.path) {
-                        val segment = when {
-                            files.size == 1 -> Segment.Only
-                            index == 0 -> Segment.First
-                            index == files.lastIndex -> Segment.Last
-                            else -> Segment.Middle
+                        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
+                            Text(file.path.substringAfterLast('/'), style = type.subhead.copy(fontFamily = type.code.fontFamily), color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                            val folder = file.path.substringBeforeLast('/', "")
+                            if (folder.isNotEmpty()) Text(folder, style = type.caption, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.StartEllipsis)
                         }
-                        Row(
-                            Modifier.animateItem().cardSegment(segment).fillMaxWidth().heightIn(min = 52.dp)
-                                .then(if (loadDiff != null) Modifier.clickable(role = Role.Button) { shown = file.path } else Modifier)
-                                .padding(horizontal = LodySpacing.md, vertical = LodySpacing.sm),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(LodySpacing.sm),
-                        ) {
-                            androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
-                                Text(file.path.substringAfterLast('/'), style = type.subhead.copy(fontFamily = type.code.fontFamily), color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
-                                val folder = file.path.substringBeforeLast('/', "")
-                                if (folder.isNotEmpty()) Text(folder, style = type.caption, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.StartEllipsis)
-                            }
-                            val digits = type.footnote.copy(fontFeatureSettings = "tnum")
+                        val digits = type.footnote.copy(fontFeatureSettings = "tnum")
+                        if (file.added != null && file.removed != null) {
                             Text("+${file.added}", style = digits, color = colors.diffAddedText)
                             Text("−${file.removed}", style = digits, color = colors.diffRemovedText)
-                            if (loadDiff != null) Icon(LodyIcons.Forward, contentDescription = null, tint = colors.iconTertiary, modifier = Modifier.size(LodyIconSize.xs))
                         }
+                        if (loadDiff != null) Icon(LodyIcons.Forward, contentDescription = null, tint = colors.iconTertiary, modifier = Modifier.size(LodyIconSize.xs))
                     }
                 }
             }
-        }
-    }
+            item(key = "nav-inset") { NavigationBarSpacer() }
+        }    }
+}
+
+/** Rows scroll beneath the navigation bar; this keeps the last row's bottom clear of it. */
+@Composable
+private fun NavigationBarSpacer() {
+    Spacer(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = LodySpacing.lg))
 }
 
 /**
@@ -666,22 +918,29 @@ internal fun FilesSheet(
  */
 @Composable
 private fun DiffPage(
-    entryId: String,
-    file: app.lody.android.runtime.FileChange,
-    loadDiff: suspend (entryId: String, path: String) -> app.lody.android.runtime.FileDiff,
+    path: String,
+    added: Int?,
+    removed: Int?,
+    loadDiff: suspend (path: String) -> app.lody.android.runtime.FileDiff,
     onBack: () -> Unit,
 ) {
     val colors = LodyTheme.colors
     val type = LodyTheme.typography
     val code = type.footnote.copy(fontFamily = type.code.fontFamily)
-    var state by androidx.compose.runtime.remember(file.path) { androidx.compose.runtime.mutableStateOf<DiffState>(DiffState.Loading) }
-    androidx.compose.runtime.LaunchedEffect(file.path) {
+    var attempt by androidx.compose.runtime.remember(path) { androidx.compose.runtime.mutableIntStateOf(0) }
+    var state by androidx.compose.runtime.remember(path) { androidx.compose.runtime.mutableStateOf<DiffState>(DiffState.Loading) }
+    var loadedCounts by androidx.compose.runtime.remember(path) { androidx.compose.runtime.mutableStateOf<Pair<Int, Int>?>(null) }
+    androidx.compose.runtime.LaunchedEffect(path, attempt) {
+        loadedCounts = null
+        state = DiffState.Loading
         state = try {
-            val diff = loadDiff(entryId, file.path)
+            val diff = loadDiff(path)
             val before = diff.oldText
             val after = diff.newText
+            if (diff.added != null && diff.removed != null) loadedCounts = diff.added to diff.removed
             when {
-                diff.unavailable != null -> DiffState.Unavailable
+                diff.unavailable != null -> DiffState.Unavailable(diff.unavailable)
+                diff.tooLarge -> DiffState.TooLarge
                 before == null || after == null -> DiffState.Binary
                 else -> {
                     val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { LineDiff.compute(before, after) }
@@ -689,42 +948,40 @@ private fun DiffPage(
                 }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (_: Exception) { DiffState.Unavailable }
+        catch (_: Exception) { DiffState.Unavailable(null) }
     }
-    androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
-        Row(Modifier.padding(end = TranscriptMargin), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
-                Icon(LodyIcons.Back, contentDescription = stringResource(R.string.chat_files_back), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
-            }
-            androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
-                Text(file.path.substringAfterLast('/'), style = type.headline.copy(fontFamily = type.code.fontFamily), color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
-                val folder = file.path.substringBeforeLast('/', "")
-                if (folder.isNotEmpty()) Text(folder, style = type.caption, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.StartEllipsis)
-            }
-            val digits = type.subhead.copy(fontFeatureSettings = "tnum")
-            Text("+${file.added}", style = digits, color = colors.diffAddedText, modifier = Modifier.padding(end = LodySpacing.xs))
-            Text("−${file.removed}", style = digits, color = colors.diffRemovedText)
-        }
-        androidx.compose.animation.Crossfade(state, label = "diff-state", modifier = Modifier.weight(1f)) { current ->
+    Box(Modifier.fillMaxSize()) {
+        androidx.compose.animation.Crossfade(state, label = "diff-state", modifier = Modifier.fillMaxSize()) { current ->
             when (current) {
-                DiffState.Loading -> androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().padding(LodySpacing.xl), contentAlignment = Alignment.Center) {
+                DiffState.Loading -> androidx.compose.foundation.layout.Box(
+                    Modifier.fillMaxWidth().padding(top = SheetHeaderRowHeight).padding(LodySpacing.xl),
+                    contentAlignment = Alignment.Center,
+                ) {
                     app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.md), color = colors.iconTertiary)
                 }
-                DiffState.Unavailable, DiffState.Binary, DiffState.TooLarge -> Text(
-                    stringResource(
-                        when (current) {
-                            DiffState.Binary -> R.string.chat_diff_binary
-                            DiffState.TooLarge -> R.string.chat_diff_too_large
-                            else -> R.string.chat_diff_unavailable
-                        },
-                    ),
+                DiffState.Binary, DiffState.TooLarge -> Text(
+                    stringResource(if (current == DiffState.Binary) R.string.chat_diff_binary else R.string.chat_diff_too_large),
                     style = type.subhead, color = colors.textSecondary,
-                    modifier = Modifier.padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+                    modifier = Modifier.padding(top = SheetHeaderRowHeight).padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
                 )
+                is DiffState.Unavailable -> Column(
+                    Modifier.padding(top = SheetHeaderRowHeight).padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg),
+                    verticalArrangement = Arrangement.spacedBy(LodySpacing.sm),
+                ) {
+                    Text(
+                        stringResource(diffUnavailableMessage(current.reason)),
+                        style = type.subhead, color = colors.textSecondary,
+                    )
+                    if (diffUnavailableRetryable(current.reason)) {
+                        app.lody.android.designsystem.LodyTextButton(onClick = { attempt++ }) {
+                            Text(stringResource(R.string.chat_retry))
+                        }
+                    }
+                }
                 is DiffState.Ready -> androidx.compose.foundation.text.selection.SelectionContainer {
                     androidx.compose.foundation.lazy.LazyColumn(
-                        Modifier.fillMaxWidth(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = LodySpacing.xl),
+                        Modifier.fillMaxSize(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = SheetHeaderRowHeight),
                     ) {
                         current.result.hunks.forEachIndexed { hunkIndex, hunk ->
                             if (hunk.skippedBefore > 0) item(key = "skip:$hunkIndex") { FoldedLines(hunk.skippedBefore) }
@@ -736,16 +993,59 @@ private fun DiffPage(
                         if (current.result.hunks.isEmpty()) item(key = "same") {
                             Text(stringResource(R.string.chat_diff_same), style = type.subhead, color = colors.textSecondary, modifier = Modifier.padding(horizontal = TranscriptMargin, vertical = LodySpacing.lg))
                         }
+                        item(key = "nav-inset") { NavigationBarSpacer() }
                     }
                 }
             }
+        }
+        DiffPageHeader(
+            path = path,
+            added = added,
+            removed = removed,
+            loadedCounts = loadedCounts,
+            onBack = onBack,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
+    }
+}
+
+/** Back, the file name and totals over the diff, on the same fading backdrop as the sheet title. */
+@Composable
+private fun DiffPageHeader(
+    path: String,
+    added: Int?,
+    removed: Int?,
+    loadedCounts: Pair<Int, Int>?,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LodyTheme.colors
+    val type = LodyTheme.typography
+    Row(
+        modifier.fillMaxWidth().pageHeaderFade()
+            .padding(end = TranscriptMargin).padding(bottom = LodySpacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(LodyIcons.Back, contentDescription = stringResource(R.string.chat_files_back), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
+        }
+        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
+            Text(path.substringAfterLast('/'), style = type.headline.copy(fontFamily = type.code.fontFamily), color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+            val folder = path.substringBeforeLast('/', "")
+            if (folder.isNotEmpty()) Text(folder, style = type.caption, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.StartEllipsis)
+        }
+        val counts = diffCounts(added, removed, loadedCounts?.first, loadedCounts?.second)
+        if (counts != null) {
+            val digits = type.subhead.copy(fontFeatureSettings = "tnum")
+            Text("+${counts.first}", style = digits, color = colors.diffAddedText, modifier = Modifier.padding(end = LodySpacing.xs))
+            Text("−${counts.second}", style = digits, color = colors.diffRemovedText)
         }
     }
 }
 
 private sealed interface DiffState {
     data object Loading : DiffState
-    data object Unavailable : DiffState
+    data class Unavailable(val reason: String?) : DiffState
     data object Binary : DiffState
     data object TooLarge : DiffState
     data class Ready(val result: LineDiff.Result) : DiffState

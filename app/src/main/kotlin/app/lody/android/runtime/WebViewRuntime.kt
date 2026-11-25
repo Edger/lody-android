@@ -62,6 +62,15 @@ open class WebViewRuntime internal constructor(
             call("archiveSession", JSONArray().put(command.id).put(command.archived), CommandDeadline.WRITE)
             RuntimeResult.Accepted
         }
+        is RuntimeCommand.StatusView -> {
+            val value = call("statusViewCommand", JSONArray().put(StatusViewJson.command(command.command)).put(command.scope?.key ?: JSONObject.NULL), CommandDeadline.WRITE) as JSONObject
+            RuntimeResult.StatusViewWrites((value.opt("writes") as? Number)?.toInt()?.coerceAtLeast(0) ?: 0)
+        }
+        RuntimeCommand.SnoozePresets -> RuntimeResult.SnoozePresets(StatusViewJson.presets(call("snoozePresets", deadline = CommandDeadline.QUERY) as JSONObject))
+        is RuntimeCommand.MarkRead -> {
+            call("markSessionRead", JSONArray().put(command.id).put(command.lastReadAt), CommandDeadline.WRITE)
+            RuntimeResult.Accepted
+        }
         is RuntimeCommand.CreateTab -> {
             val value = call("createTab", JSONArray().put(command.parentId).put(command.id).put(command.title).put(backend.preferRoost).put(command.billing ?: JSONObject.NULL), CommandDeadline.WRITE) as JSONObject
             RuntimeResult.Created(CreationReceipt(command.id, value.getString("state"), value.optString("reason").ifBlank { null }))
@@ -135,6 +144,7 @@ open class WebViewRuntime internal constructor(
                         it.getString("path"), it.optString("name", it.getString("path")), it.optString("kind", "file"),
                         it.optString("subtitle"), it.optString("insertText").ifBlank { null },
                         it.optString("emoji").ifBlank { null },
+                        it.optString("revision").ifBlank { null },
                     )
                 },
                 value.optBoolean("truncated"), value.optBoolean("incomplete"),
@@ -166,6 +176,7 @@ open class WebViewRuntime internal constructor(
             }
             if (request.configOptionValues.isNotEmpty()) payload.put("configOptionValues", JSONObject(request.configOptionValues))
             if (request.attachments.isNotEmpty()) payload.put("attachments", JSONArray(request.attachments))
+            if (request.quotes.isNotEmpty()) payload.put("quotes", JSONArray(request.quotes.map { JSONObject().put("id", it.id).put("snapshot", it.snapshot).put("comment", it.comment) }))
             command.billing?.let { payload.put("billingEntitlement", it) }
             val value = call("sendText", JSONArray().put(payload), CommandDeadline.WRITE) as JSONObject
             RuntimeResult.Sent(value.optString("state", "unknown"), value.optString("reason").ifBlank { null })
@@ -195,7 +206,15 @@ open class WebViewRuntime internal constructor(
             RuntimeResult.Detail(RuntimeProtocol.detail(value as JSONObject))
         }
         is RuntimeCommand.TurnDiff -> {
-            val value = call("turnDiff", JSONArray().put(command.sessionId).put(command.entryId).put(command.path), CommandDeadline.QUERY)
+            val value = call("turnDiff", JSONArray().put(command.sessionId).put(command.entryId).put(command.path), CommandDeadline.FILE_READ)
+            RuntimeResult.Diff(RuntimeProtocol.diff(value as JSONObject))
+        }
+        is RuntimeCommand.WorkspaceChanges -> {
+            val value = call("workspaceChanges", workspaceChangesArgs(command.sessionId, command.scope), CommandDeadline.FILE_READ)
+            RuntimeResult.WorkspaceChanges(RuntimeProtocol.workspaceChanges(value as JSONObject))
+        }
+        is RuntimeCommand.FileDiff -> {
+            val value = call("fileDiff", fileDiffArgs(command.sessionId, command.path, command.scope), CommandDeadline.FILE_READ)
             RuntimeResult.Diff(RuntimeProtocol.diff(value as JSONObject))
         }
         is RuntimeCommand.ListDir -> {
@@ -248,3 +267,11 @@ open class WebViewRuntime internal constructor(
         }
     }
 }
+
+/** `workspaceChanges` arguments; [DiffScope.Branch] sends no `scope` so older machines keep their default. */
+internal fun workspaceChangesArgs(sessionId: String, scope: DiffScope?): JSONArray =
+    JSONArray().put(sessionId).apply { scope?.wire?.let { put(it) } }
+
+/** `fileDiff` arguments; [DiffScope.Branch] sends no `scope` so older machines keep their default. */
+internal fun fileDiffArgs(sessionId: String, path: String, scope: DiffScope?): JSONArray =
+    JSONArray().put(sessionId).put(path).apply { scope?.wire?.let { put(it) } }
