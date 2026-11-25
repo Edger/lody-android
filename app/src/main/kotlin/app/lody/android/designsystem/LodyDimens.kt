@@ -127,6 +127,8 @@ object LodySize {
     val avatarXs = 16.dp
     val avatarSm = 20.dp
     val avatarMd = 28.dp
+    /** Workspace capsule in the Home top bar (iOS `LodyMenuButtonStyle.avatarSide`). */
+    val avatarBar = 32.dp
     val avatarLg = 40.dp
     val avatarXl = 56.dp
     val composerMin = 48.dp
@@ -150,6 +152,7 @@ object LodySize {
         "avatarXs" to avatarXs,
         "avatarSm" to avatarSm,
         "avatarMd" to avatarMd,
+        "avatarBar" to avatarBar,
         "avatarLg" to avatarLg,
         "avatarXl" to avatarXl,
         "composerMin" to composerMin,
@@ -174,6 +177,8 @@ object LodyLayout {
     val stackGap = 12.dp
     /** Max text column width on tablets / foldables. */
     val readableMaxWidth = 680.dp
+    /** Kept clear at the trailing edge of the Home bar for search and the view menu (iOS `InboxChrome.layout`). */
+    val homeTopBarTrailingReserve = 192.dp
 
     val all: List<Pair<String, Dp>> = listOf(
         "screenPaddingX" to screenPaddingX,
@@ -185,6 +190,7 @@ object LodyLayout {
         "trailingMetaMaxWidth" to trailingMetaMaxWidth,
         "stackGap" to stackGap,
         "readableMaxWidth" to readableMaxWidth,
+        "homeTopBarTrailingReserve" to homeTopBarTrailingReserve,
     )
 }
 

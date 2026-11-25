@@ -1357,10 +1357,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                         Modifier
                             .align(Alignment.BottomCenter)
                             .padding(start = inset, end = inset, bottom = LodySpacing.md)
-                            .dropShadow(CircleShape, LodyElevations.sm.shadow())
-                            .clip(CircleShape)
-                            .background(colors.bgOverlay)
-                            .border(0.5.dp, colors.borderSubtle, CircleShape)
+                            .lodyFloatingCapsule()
                             .then(if (paused) Modifier.clickable(role = Role.Button) {
                                 historySync = null
                                 manualReconnect = true
@@ -1787,10 +1784,7 @@ private fun RoundButton(icon: ImageVector, label: String, modifier: Modifier = M
     ) {
         Box(
             Modifier.size(visualSize)
-                .dropShadow(CircleShape, LodyElevations.sm.shadow())
-                .clip(CircleShape)
-                .background(colors.bgOverlay)
-                .border(0.5.dp, colors.borderSubtle, CircleShape),
+                .lodyFloatingCapsule(),
             contentAlignment = Alignment.Center,
         ) {
             Icon(icon, contentDescription = null, tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
