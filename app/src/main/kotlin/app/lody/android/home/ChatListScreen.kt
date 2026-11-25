@@ -70,6 +70,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.snapshotFlow
@@ -164,6 +165,7 @@ import app.lody.android.designsystem.LodySize
 import app.lody.android.designsystem.LodySpacing
 import app.lody.android.designsystem.LodyTheme
 import app.lody.android.designsystem.LodyWorkingGrid
+import app.lody.android.designsystem.lodyFloatingCapsule
 import app.lody.android.designsystem.shadow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -421,18 +423,15 @@ fun ChatListScreen(
         topBar = {
             when {
                 searching -> SearchTopBar(query, onQueryChange = { query = it }, onClose = closeSearch)
-                tab == HomeTab.Chats -> Box {
-                    HomeTopBar(state, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace, collapsed = syncShown != null) {
-                        ViewMenu(homeScope, selectScope, grouping, selectGrouping, details, toggleDetail, archived) { archived = it }
-                    }
-                    HomeSyncPill(syncShown, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
-                }
                 // Schedules keeps the Chats header (workspace, sync, search) with its own view menu.
-                tab == HomeTab.Schedules -> Box {
-                    HomeTopBar(state, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace, collapsed = syncShown != null) {
+                tab == HomeTab.Chats || tab == HomeTab.Schedules -> HomeHeader(
+                    state, syncShown, onSearch = { searching = true }, onSelectWorkspace = onSelectWorkspace,
+                ) {
+                    if (tab == HomeTab.Chats) {
+                        ViewMenu(homeScope, selectScope, grouping, selectGrouping, details, toggleDetail, archived) { archived = it }
+                    } else {
                         ScheduleViewMenu(showFinished) { showFinished = it }
                     }
-                    HomeSyncPill(syncShown, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
                 }
                 else -> TitleTopBar(stringResource(tab.label), onBack = null)
             }
@@ -511,6 +510,38 @@ fun ChatListScreen(
 
 // MARK: - Top bars
 
+/** The space the workspace capsule may use: the bar, less its horizontal safe area and the controls' reserve. */
+@Composable
+private fun BoxWithConstraintsScope.workspaceMaxWidth(): Dp {
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val safe = WindowInsets.safeDrawing
+    val horizontal = with(density) { (safe.getLeft(this, layoutDirection) + safe.getRight(this, layoutDirection)).toDp() }
+    return (maxWidth - horizontal - LodyLayout.homeTopBarTrailingReserve).coerceAtLeast(LodySize.touchTarget)
+}
+
+/** Chats and Schedules share the Home bar: workspace capsule, centred sync pill, search and a view menu. */
+@Composable
+private fun HomeHeader(
+    state: ChatListUiState,
+    syncShown: HomeSyncShown?,
+    onSearch: () -> Unit,
+    onSelectWorkspace: (Workspace) -> Unit,
+    menu: @Composable () -> Unit,
+) {
+    BoxWithConstraints {
+        HomeTopBar(
+            state,
+            onSearch = onSearch,
+            onSelectWorkspace = onSelectWorkspace,
+            collapsed = syncShown != null,
+            workspaceMaxWidth = workspaceMaxWidth(),
+            menu = menu,
+        )
+        HomeSyncPill(syncShown, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)))
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeTopBar(
@@ -518,18 +549,29 @@ private fun HomeTopBar(
     onSearch: () -> Unit,
     onSelectWorkspace: (Workspace) -> Unit,
     collapsed: Boolean = false,
+    workspaceMaxWidth: Dp,
     menu: @Composable () -> Unit,
 ) {
     val colors = LodyTheme.colors
     TopAppBar(
         windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
-        title = { WorkspaceCapsule(state, onSelectWorkspace, collapsed = collapsed) },
+        title = { WorkspaceCapsule(state, onSelectWorkspace, collapsed = collapsed, maxWidth = workspaceMaxWidth) },
         actions = {
             val search = stringResource(R.string.home_search)
-            IconButton(onClick = onSearch, modifier = Modifier.semantics { contentDescription = search }) {
-                Glyph(LodyIcons.Search, colors.iconPrimary)
+            // One capsule for both controls, as the iOS bar's shared glass.
+            Row(
+                modifier = Modifier
+                    .padding(end = LodyLayout.screenPaddingX)
+                    .height(LodySize.touchTarget)
+                    .lodyFloatingCapsule()
+                    .padding(horizontal = LodySpacing.xxs),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onSearch, modifier = Modifier.semantics { contentDescription = search }) {
+                    Glyph(LodyIcons.Search, colors.iconPrimary)
+                }
+                menu()
             }
-            menu()
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = homePageColor(), scrolledContainerColor = homePageColor()),
     )
@@ -555,30 +597,41 @@ private fun TitleTopBar(title: String, onBack: (() -> Unit)?) {
 }
 
 /**
- * Workspace logo + name; tapping switches workspace. Connection state floats in [HomeSyncPill]
- * instead, so the entry collapses to a circular logo while the pill is up (as iOS).
+ * Workspace logo + name in a floating capsule; tapping switches workspace. The capsule hugs the
+ * name up to the bar's remaining width (iOS `InboxChrome.layout`), so a long name ellipsizes
+ * rather than stopping short. Connection state floats in [HomeSyncPill] instead, so the entry
+ * collapses to a circular logo while the pill is up (as iOS).
  */
 @Composable
-private fun WorkspaceCapsule(state: ChatListUiState, onSelect: (Workspace) -> Unit, collapsed: Boolean) {
+private fun WorkspaceCapsule(
+    state: ChatListUiState,
+    onSelect: (Workspace) -> Unit,
+    collapsed: Boolean,
+    maxWidth: Dp,
+) {
     val colors = LodyTheme.colors
     var open by remember { mutableStateOf(false) }
     val label = stringResource(R.string.home_account)
+    // The circle's inset: the bar height less the avatar, as iOS `LodyMenuButtonStyle`.
+    val capsuleInset = (LodySize.touchTarget - LodySize.avatarBar) / 2
     val endPadding by animateDpAsState(
-        targetValue = if (collapsed) 0.dp else LodySpacing.md,
+        targetValue = if (collapsed) capsuleInset else LodySpacing.md,
         animationSpec = tween(LodyMotion.baseMillis, easing = LodyMotion.standard),
         label = "workspaceCapsuleEnd",
     )
     Box {
         Row(
             modifier = Modifier
-                .clip(CircleShape)
+                .widthIn(max = maxWidth)
+                .height(LodySize.touchTarget)
+                .lodyFloatingCapsule()
                 .clickable(role = Role.Button) { open = true }
                 .semantics { contentDescription = "$label, ${state.workspaceName}" }
-                .padding(end = endPadding),
+                .padding(start = capsuleInset, end = endPadding),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // The workspace's real logo once loaded, its initial until then (as iOS).
-            Avatar(state.workspaceImage, state.initial, LodySize.avatarMd)
+            Avatar(state.workspaceImage, state.initial, LodySize.avatarBar)
             // The name steps aside while the centred sync pill is up; its padding leaves with it so
             // the collapsed entry is a circle.
             AnimatedVisibility(
@@ -586,14 +639,13 @@ private fun WorkspaceCapsule(state: ChatListUiState, onSelect: (Workspace) -> Un
                 enter = fadeIn(tween(LodyMotion.baseMillis)) + expandHorizontally(tween(LodyMotion.baseMillis, easing = LodyMotion.standard)),
                 exit = fadeOut(tween(LodyMotion.fastMillis)) + shrinkHorizontally(tween(LodyMotion.baseMillis, easing = LodyMotion.standard)),
             ) {
-                // Capped so a long name ellipsizes before the centred sync pill.
                 Text(
                     state.workspaceName,
                     style = LodyTheme.typography.headline,
                     color = colors.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = LodySpacing.sm).widthIn(max = LodyLayout.trailingMetaMaxWidth),
+                    modifier = Modifier.padding(start = LodySpacing.sm),
                 )
             }
         }
@@ -896,8 +948,8 @@ internal fun HomeBottomBar(selected: HomeTab, collapsed: Boolean, onSelect: (Hom
         val width = expandedWidth + (compactWidth - expandedWidth) * progress
         Row(
             modifier = Modifier.align(Alignment.CenterStart).width(width).height(height)
-                .dropShadow(CircleShape, LodyElevations.md.shadow())
-                .clip(CircleShape).background(colors.bgOverlay).padding(LodySpacing.xs)
+                .lodyFloatingCapsule(elevation = LodyElevations.md, outline = false)
+                .padding(LodySpacing.xs)
                 .selectableGroup(),
         ) {
             HomeTab.entries.forEach { tab ->
