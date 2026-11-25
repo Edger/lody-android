@@ -97,9 +97,7 @@ private fun AddCapsule(label: String, icon: ImageVector, onClick: () -> Unit) {
     val colors = LodyTheme.colors
     Row(
         Modifier
-            .dropShadow(CircleShape, LodyElevations.md.shadow())
-            .clip(CircleShape)
-            .background(colors.bgOverlay)
+            .lodyFloatingCapsule(elevation = LodyElevations.md, outline = false)
             .clickable(role = Role.Button, onClick = onClick)
             .heightIn(min = LodySize.controlLg)
             .padding(horizontal = LodySpacing.lg),
