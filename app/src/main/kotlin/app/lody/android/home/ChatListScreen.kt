@@ -151,9 +151,11 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.lody.android.R
 import app.lody.android.auth.Workspace
 import app.lody.android.runtime.CatalogSnapshot
@@ -1761,7 +1763,8 @@ internal fun SectionTitle(
         ) {
             // The project's logo in its original colours, unlike the muted row marks.
             if (!repository.isNullOrBlank()) RepositoryIcon(repository, muted = false)
-            Text(text, style = LodyTheme.typography.subhead, color = LodyTheme.colors.textSecondary)
+            // iOS `groupLabel`: 16 / 22 medium in tertiary ink, unlike the rows it heads.
+            Text(text, style = LodyTheme.typography.subhead.copy(fontSize = GroupLabelSize, lineHeight = GroupLabelLineHeight), color = LodyTheme.colors.textTertiary)
             if (count != null) Text(count.toString(), style = LodyTheme.typography.footnote.copy(fontFeatureSettings = "tnum"), color = LodyTheme.colors.textTertiary)
             if (collapsed != null) Glyph(LodyIcons.Forward, LodyTheme.colors.textSecondary, FamilyChevron, Modifier.rotate(angle))
         }
@@ -1833,7 +1836,8 @@ private fun ChatRow(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = LodySize.listRow)
+                    // Child rows sit on the 40 dp control height, as on iOS (`LodySize.controlMd`).
+                    .heightIn(min = if (nested) LodySize.controlMd else LodySize.listRow)
                     .then(press?.let { handle -> Modifier.clickable(onClick = onClick).then(handle()) }
                         ?: Modifier.combinedClickable(onClick = onClick, onLongClick = onMenu?.let { { it(true) } }))
                     .then(if (actions.isNotEmpty()) Modifier.semantics { customActions = actions } else Modifier)
@@ -1848,7 +1852,9 @@ private fun ChatRow(
                         Text(
                             chat.title,
                             style = when {
-                                nested -> type.callout.copy(fontWeight = if (chat.unread) type.bodyEmphasis.fontWeight else type.callout.fontWeight)
+                                // iOS `ChatRowContent`: only unread children go semibold; unread
+                                // roots use `bodyEmphasis`.
+                                nested -> type.callout.copy(fontWeight = if (chat.unread) FontWeight.W600 else FontWeight.W400)
                                 chat.unread -> type.bodyEmphasis
                                 else -> type.body
                             },
@@ -1956,6 +1962,10 @@ private val RailX = LodyLayout.screenPaddingX + LodySpacing.xs
 
 /** One nesting level: how far a nested row's title steps in (iOS `ChatRowContent.childLevel`). */
 private val TreeLevel = LodyLayout.childIndent - LodyLayout.screenPaddingX
+
+// Group labels follow the iOS `groupLabel` (16 / 22 medium); row type keeps the shared scale.
+private val GroupLabelSize = 16.sp
+private val GroupLabelLineHeight = 22.sp
 
 /**
  * Children curve from the family trunk into their title. Intermediate rows continue the trunk;
