@@ -114,6 +114,7 @@
     <string name="chat_image_next">下一张</string>
     <string name="chat_image_previous">上一张</string>
     <string name="chat_image_failed">图片加载失败，轻点重试</string>
+    <string name="chat_image_retry">重新加载图片</string>
     <string name="chat_image_close">关闭图片</string>
     <string name="chat_mermaid_open">全屏查看</string>
     <string name="chat_mermaid_close">关闭图表</string>
@@ -122,6 +123,14 @@
     <string name="chat_image_save">保存到相册</string>
     <string name="chat_image_copied">图片已复制</string>
     <string name="chat_image_saved">已保存到 Pictures/Lody</string>
+    <string name="debug_images_title">图片状态</string>
+    <string name="debug_images_hint">对话图片控件的开发者预览，使用模拟图片源。轻点已加载的图片打开查看器；轻点失败的图片可重试。</string>
+    <string name="debug_images_compact">用户附件缩略图</string>
+    <string name="debug_images_agent">Agent 图片卡片</string>
+    <string name="debug_images_stack">图片堆叠</string>
+    <string name="debug_images_loaded">已加载</string>
+    <string name="debug_images_loading">加载中</string>
+    <string name="debug_images_failed">失败</string>
     <string name="chat_image_save_failed">无法保存图片</string>
     <string name="chat_image_unavailable">图片暂不可用</string>
 

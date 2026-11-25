@@ -193,12 +193,38 @@ class RuntimeProtocolTest {
   val snapshot=(RuntimeProtocol.event(JSONObject().put("type","session").put("sessionId","s").put("session",body)) as RuntimeEvent.SessionUpdated).snapshot
   // Agent switches (Fast) come back so the chip and sheet reopen on them; no Role was said.
   assertEquals(RunChoice("gpt","plan","high",mapOf("fast" to true)),snapshot.composer)
-  // An attachment-only user turn stays in the transcript.
-  // An uploaded file keeps what opening it needs: its id, the session that stores it, transport and size.
+  // An attachment-only user turn stays in the transcript; pictures keep their image and
+  // uploaded files what opening them needs: id, storing session, transport and size.
   val notes=app.lody.android.chat.SessionFileRef("f1","notes.md","parent","r2",12)
-  assertEquals(listOf(MessageAttachment("a.png",true),MessageAttachment("b.png",true),MessageAttachment("notes.md",false,notes)),snapshot.messages.single().attachments)
+  assertEquals(listOf(
+   MessageAttachment("a.png",true,TurnImage("i1","a.png",null,null,null)),
+   MessageAttachment("b.png",true,TurnImage("i2","b.png",null,null,null)),
+   MessageAttachment("notes.md",false,file=notes),
+  ),snapshot.messages.single().attachments)
   assertTrue(notes.downloadable && notes.markdown)
   assertFalse(notes.copy(transport="local").downloadable)
+ }
+ @Test fun userImageAttachmentsKeepTheirSessionImage() {
+  val body="""{"v":1,"status":"live","entries":[{"id":"u","role":"user","finished":true,"items":[{"type":"image","image":{"id":"i1","fileName":"a.png","storageSessionId":"shared","width":600,"height":400}},{"type":"image","image":{"fileName":"no-id.png"}},{"type":"file","file":{"id":"f1","fileName":"notes.md"}}]}]}"""
+  val snapshot=(RuntimeProtocol.event(JSONObject().put("type","session").put("sessionId","s").put("session",body)) as RuntimeEvent.SessionUpdated).snapshot
+  // An image the server can address renders as a picture; one without an id stays a chip.
+  assertEquals(listOf(
+   MessageAttachment("a.png",true,TurnImage("i1","a.png","shared",600,400)),
+   MessageAttachment("no-id.png",true),
+   MessageAttachment("notes.md",false,file=app.lody.android.chat.SessionFileRef("f1","notes.md")),
+  ),snapshot.messages.single().attachments)
+ }
+ @Test fun unaddressableImagesStayChipsAndBadSizesAreDropped() {
+  val body="""{"v":1,"status":"live","entries":[{"id":"u","role":"user","finished":true,"items":[{"type":"image","image":{"id":" ","fileName":"blank.png"}},{"type":"image","image":{"id":"i2","fileName":"odd.png","storageSessionId":" ","width":0,"height":-3}},{"type":"image_group","images":[{"fileName":"group-a.png"},{"id":"i3","fileName":"group-b.png","width":640,"height":0}]}]}]}"""
+  val snapshot=(RuntimeProtocol.event(JSONObject().put("type","session").put("sessionId","s").put("session",body)) as RuntimeEvent.SessionUpdated).snapshot
+  // A blank id is no address, so the picture stays a chip; a group mixes both by its own ids.
+  // Zero or negative sizes and a blank storing session are dropped rather than carried.
+  assertEquals(listOf(
+   MessageAttachment("blank.png",true),
+   MessageAttachment("odd.png",true,TurnImage("i2","odd.png",null,null,null)),
+   MessageAttachment("group-a.png",true),
+   MessageAttachment("group-b.png",true,TurnImage("i3","group-b.png",null,640,null)),
+  ),snapshot.messages.single().attachments)
  }
  @Test fun sessionProjectionIsNotDropped() {
   val frame=JSONObject().put("type","session").put("sessionId","s").put("session", """{"v":1,"status":"live","entries":[]}""")

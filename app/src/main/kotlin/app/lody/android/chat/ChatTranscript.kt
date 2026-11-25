@@ -56,6 +56,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import app.lody.android.runtime.TurnItem
@@ -428,6 +429,9 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
     var expanded by androidx.compose.runtime.saveable.rememberSaveable(entry.id) { mutableStateOf(false) }
     var overflowing by remember(entry.text) { mutableStateOf(false) }
     var menu by remember(entry.id) { mutableStateOf(false) }
+    // Pictures the server can address render as tiles; the viewer pages through them.
+    val images = entry.attachments.mapNotNull { it.turnImage }
+    var imageViewer by rememberSaveable(entry.id) { mutableStateOf<Int?>(null) }
     // One quote block's full snapshot in a sheet, selectable and copyable.
     var selecting by remember(entry.id) { mutableStateOf<String?>(null) }
     val segments = remember(entry.text, entry.references, entry.quotes) { MessageQuotes.segments(entry.text, entry.references, entry.quotes) }
@@ -463,7 +467,8 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
                     Text(stringResource(R.string.chat_forget_action), style = LodyTheme.typography.footnote)
                 }
             }
-            // Attachments sit above the bubble, trailing-aligned, one chip each (name + kind glyph).
+            // Attachments sit above the bubble, trailing-aligned: a picture tile when its bytes
+            // are addressable, otherwise a name + kind chip.
             if (entry.attachments.isNotEmpty()) {
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(
@@ -472,14 +477,22 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
                     verticalArrangement = Arrangement.spacedBy(LodySpacing.xs),
                 ) {
                     val files = LocalSessionFiles.current
+                    var picture = 0
                     entry.attachments.forEach { attachment ->
-                        val file = attachment.file
-                        val opens = files != null && file != null
-                        AttachmentChip(
-                            attachment.name, attachment.image,
-                            if (opens) Modifier.clip(RoundedCornerShape(LodyRadius.md)).clickable(role = Role.Button) { files!!.open(file!!) } else Modifier,
-                            trailing = if (opens && file!!.id in files!!.busy) ({ app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.sm), color = LodyTheme.colors.iconTertiary) }) else null,
-                        )
+                        val image = attachment.turnImage
+                        if (image != null) {
+                            // Open by position: structurally equal images must not all page to the first.
+                            val index = picture++
+                            AttachmentImageTile(image, onClick = { imageViewer = index })
+                        } else {
+                            val file = attachment.file
+                            val opens = files != null && file != null
+                            AttachmentChip(
+                                attachment.name, attachment.image,
+                                if (opens) Modifier.clip(RoundedCornerShape(LodyRadius.md)).clickable(role = Role.Button) { files!!.open(file!!) } else Modifier,
+                                trailing = if (opens && file!!.id in files!!.busy) ({ app.lody.android.designsystem.LodyLoadingIndicator(Modifier.size(LodyIconSize.sm), color = LodyTheme.colors.iconTertiary) }) else null,
+                            )
+                        }
                     }
                 }
             }
@@ -528,6 +541,9 @@ private fun UserTurn(entry: ChatEntry.User, actions: MessageActionState, onForge
         }
         // Beside the bubble's top: past the header line and the gap under it.
         Avatar(entry.who.image, entry.who.name, UserAvatarSize, Modifier.padding(top = UserHeaderHeight + LodySpacing.xs))
+    }
+    imageViewer?.takeIf { it in images.indices }?.let { start ->
+        ImageViewer(images, start) { imageViewer = null }
     }
 }
 

@@ -315,11 +315,7 @@ internal object RuntimeProtocol {
             "image", "image_group" -> {
                 val raw = if (item.optString("type") == "image") listOfNotNull(item.optJSONObject("image"))
                 else item.optJSONArray("images")?.objects().orEmpty()
-                raw.mapNotNull { image ->
-                    val imageId = image.optString("id").ifBlank { return@mapNotNull null }
-                    fun size(key: String) = (image.opt(key) as? Number)?.toInt()?.takeIf { it > 0 }
-                    TurnImage(imageId, image.optString("fileName").ifBlank { "image" }, (image.opt("storageSessionId") as? String)?.takeIf { it.isNotBlank() }, size("width"), size("height"))
-                }.takeIf { it.isNotEmpty() }?.let { TurnItem.Images(id, it) }
+                raw.mapNotNull(::turnImage).takeIf { it.isNotEmpty() }?.let { TurnItem.Images(id, it) }
             }
             "file" -> item.optJSONObject("file")?.let { file ->
                 TurnItem.File(
@@ -413,7 +409,7 @@ internal object RuntimeProtocol {
             "image" -> listOfNotNull(item.optJSONObject("image"))
             "image_group" -> item.optJSONArray("images")?.objects().orEmpty()
             else -> emptyList()
-        }.map { MessageAttachment(it.optString("fileName").ifBlank { "image" }, image = true) } +
+        }.map(::imageAttachment) +
             listOfNotNull(item.optJSONObject("file")?.takeIf { item.optString("type") == "file" }?.let {
                 val name = it.optString("fileName").ifBlank { "file" }
                 MessageAttachment(name, image = false, file = it.optString("id").takeIf { id -> id.isNotEmpty() }?.let { id ->
@@ -426,6 +422,20 @@ internal object RuntimeProtocol {
                     )
                 })
             })
+    }
+
+    /** A user attachment picture; its session image is kept when the server gave it an id. */
+    private fun imageAttachment(image: JSONObject): MessageAttachment =
+        MessageAttachment(image.optString("fileName").ifBlank { "image" }, image = true, turnImage(image))
+
+    /** One projected `image` block: addressable only with a non-blank id; sizes must be positive. */
+    private fun turnImage(image: JSONObject): TurnImage? {
+        val id = image.optString("id").ifBlank { return null }
+        fun size(key: String) = (image.opt(key) as? Number)?.toInt()?.takeIf { it > 0 }
+        return TurnImage(
+            id, image.optString("fileName").ifBlank { "image" },
+            (image.opt("storageSessionId") as? String)?.takeIf { it.isNotBlank() }, size("width"), size("height"),
+        )
     }
     private fun JSONObject.text(key: String) = get(key) as String
     private fun JSONObject.nonnegative(key: String): Long {
