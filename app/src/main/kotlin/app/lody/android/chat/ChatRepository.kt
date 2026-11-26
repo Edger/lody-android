@@ -114,6 +114,10 @@ class ChatRepository(
     suspend fun readFile(scope: RuntimeScope, sessionId: String, path: String): FileContent =
         owner.use(scope) { (it.execute(RuntimeCommand.ReadFile(sessionId, path)) as RuntimeResult.File).value }
 
+    /** Persisted shareable turns and caption provenance from the watched session; a read, safe to retry. */
+    suspend fun shareMessages(scope: RuntimeScope, sessionId: String): ConversationShareData =
+        owner.use(scope) { (it.execute(RuntimeCommand.ConversationShareMessages(sessionId)) as RuntimeResult.ConversationShare).value }
+
     suspend fun retryPendingInput(scope: RuntimeScope, sessionId: String, inputId: String) {
         owner.use(scope) { it.execute(RuntimeCommand.RetryPendingInput(sessionId, inputId)) }
     }
@@ -220,10 +224,10 @@ class ChatRepository(
     suspend fun send(scope: RuntimeScope, request: SendTextRequest): RuntimeResult.Sent =
         owner.use(scope) { it.execute(RuntimeCommand.SendText(request)) as RuntimeResult.Sent }
 
-    fun observe(scope: RuntimeScope, id: String): Flow<SessionSnapshot> = channelFlow {
+    fun observe(scope: RuntimeScope, id: String, historyStart: () -> Int? = { null }): Flow<SessionSnapshot> = channelFlow {
         var latest = SessionSnapshot(id, "syncing", emptyList())
         suspend fun status(value: String) {
-            latest = latest.copy(status = value, sendReady = false, controlReady = false)
+            latest = latest.copy(status = value, sendReady = false, controlReady = false, historySync = null)
             send(latest)
         }
         val events = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -245,7 +249,7 @@ class ChatRepository(
                 while (currentCoroutineContext().isActive) {
                     try {
                         status("syncing")
-                        owner.use(scope) { it.execute(RuntimeCommand.WatchSession(id)) }
+                        owner.use(scope) { it.execute(RuntimeCommand.WatchSession(id, historyStart())) }
                         break
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { status("offline"); delay(2_000) }
@@ -261,3 +265,9 @@ class ChatRepository(
         }
     }.conflate()
 }
+
+val SessionSnapshot.readable: Boolean get() = status == "live" || controlReady
+
+fun SessionSnapshot.shown(readable: SessionSnapshot?): SessionSnapshot =
+    if (this.readable || readable == null || readable.id != id) this
+    else readable.copy(status = status, sendReady = false, controlReady = false)

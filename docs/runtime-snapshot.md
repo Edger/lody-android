@@ -21,6 +21,9 @@ Roost subscriptions use the shared owner's durable checkpoints over the existing
 RPC streams. The Android bridge accepts the scoped `historyToken` call and
 returns only the history proof minted by native for that workspace. The mirrored
 reader applies an exact-base delta or recovers from the persisted checkpoint.
+The session envelope carries the selected history source and publication status.
+The chat connection status shows authorized pending publications, read failures,
+and when Streams is serving the previous version while a replacement is pending.
 
 The Status view runtime (lody-ios `status-view-runtime`, see PROVENANCE `statusView`)
 vendors the shared Lody layout, planner and golden vectors under
@@ -67,8 +70,15 @@ coordinator and storage packaged in the browser module. With Developer Mode and
 the Roost History beta preference enabled, new conversations and Tabs use Roost
 on compatible owners and Loro on other owners. Session metadata stores the choice.
 
-Roost sessions use the owner machine's encrypted history RPC while Loro carries
-the control document and queue. The upstream coordinator persists pending inputs
+Roost sessions request an exact-session Streams grant first. Pending
+publication, a request for machine authorization, temporary service failure, or
+local replica quota exhaustion can use a fresh machine-authorized read. The open
+reader follows publication and retries Streams while the machine serves. It
+applies a replacement generation through a captured tail before switching the
+page back to Streams.
+Sharing from Streams captures a complete history through a fixed tail offset.
+The owner machine handles commands, and Loro carries the control document and
+queue. The upstream coordinator persists pending inputs
 in IndexedDB under the backend, account and workspace, recovers the original input after
 restart, and serializes inputs for a session. Sign-out does not clear the pending
 input database. Queue-to-guide conversion preserves the queue item when local input
@@ -80,8 +90,9 @@ have accepted it. The native transcript opens at the latest page and requests
 older pages when needed. The Android runtime test exercises the bundled production
 session module with a synthetic Streams peer.
 
-Roost reports a live session after both the control stream and owner history
-are ready. A failed read only clears its own reader's readiness until it recovers.
+Roost reports a live session after the control stream and the active history
+reader are ready. After publication, Streams provides the history checkpoint.
+An access refusal clears history readiness and stops retries for that binding.
 The composer takes command readiness from the runtime projection. A readable
 Roost window and a caught-up control stream allow Stop, Steer and permission
 answers while the history subscription reconnects. Send also needs the history metadata.
@@ -287,3 +298,12 @@ report the file outside the project.
 The snapshot at `84e41933` ([lody-ios#124](https://github.com/LodyAI/lody-ios/pull/124)) carries a tool call's `activityKind` (`context_compaction` /
 `codex_retry`, web `isProcessStatusToolCall`) in its transcript summary, so the conversation
 shows context compaction as its own status row instead of an ordinary tool step.
+
+The snapshot at `122a6753` ([lody-ios#189](https://github.com/LodyAI/lody-ios/pull/189)) mirrors the iOS mention-expansion and catalog live-update
+readiness fix: caught-up live updates reset the 12 ms import slice after idle reads and update
+catalog projections before clearing `unhealthy`, `mentionCatalog` waits up to 3 s for active
+error-free stream catch-ups while failing immediately on transport errors, newly created sessions
+fall back to live `meta` Flock rows before catalog flush, and `$` expansion skips code spans/fences
+and numeric dollar prose.
+
+The snapshot at `1a492f38` ([lody-ios#194](https://github.com/LodyAI/lody-ios/pull/194)) updates `agentRoles` to check only `meta` health (passing healthy-filtered `machineReplicas`, matching `agentProviders`), reuses the live caught-up `workspaceReplica` for `list` reads (waking `refreshWorkspace` when a missing stream is discovered or created and merging accepted writes into the synced replica), and emits `agentRolesChanged` from the workspace stream watcher whenever `agentRole` rows change. Dependencies and licenses are unchanged.

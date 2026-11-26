@@ -1,5 +1,9 @@
 package app.lody.android.home
 
+import app.lody.android.LodyApplication
+import app.lody.android.cloud.UsageSharingPreferenceService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -16,6 +20,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import app.lody.android.R
 import app.lody.android.designsystem.*
+import java.util.Locale
+
+internal fun formatDisplayLanguage(locale: Locale): String {
+    if (locale.language.equals("zh", ignoreCase = true)) {
+        val traditional = locale.script.equals("Hant", ignoreCase = true) ||
+            locale.country.uppercase(Locale.ROOT) in setOf("TW", "HK", "MO")
+        return if (traditional) "繁體中文" else "简体中文"
+    }
+    return locale.getDisplayLanguage(locale).replaceFirstChar { it.titlecase(locale) }
+}
 
 /**
  * iOS `PreferencesController`: language and notifications open the system's own pages for this
@@ -23,7 +37,7 @@ import app.lody.android.designsystem.*
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun PreferencesScreen(onBack: () -> Unit) {
+internal fun PreferencesScreen(accountId: String?, onBack: () -> Unit) {
     val context = LocalContext.current
     val locale = LocalConfiguration.current.locales[0]
     var behavior by remember { mutableStateOf(AppPreferences.queuedMessageBehavior(context)) }
@@ -47,7 +61,7 @@ internal fun PreferencesScreen(onBack: () -> Unit) {
             // no alternate app icon, so there is no Appearance group.
             item {
                 SettingsGroup(stringResource(R.string.preferences_general)) {
-                    val language = locale.getDisplayLanguage(locale).replaceFirstChar { it.titlecase(locale) }
+                    val language = formatDisplayLanguage(locale)
                     SettingsLine(stringResource(R.string.preferences_language), LodyIcons.Info, language, onClick = {
                         open(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
                             Intent(Settings.ACTION_APP_LOCALE_SETTINGS, Uri.fromParts("package", context.packageName, null))
@@ -56,6 +70,7 @@ internal fun PreferencesScreen(onBack: () -> Unit) {
                     SettingsLine(stringResource(R.string.preferences_notifications), LodyIcons.Bell, onClick = {
                         open(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
                     })
+                    if (accountId != null) key(accountId) { UsageSharingPreference(accountId) }
                 }
             }
             item {
@@ -81,4 +96,29 @@ internal fun PreferencesScreen(onBack: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun UsageSharingPreference(accountId: String) {
+    val app = LocalContext.current.applicationContext as LodyApplication
+    val scope = rememberCoroutineScope()
+    var enabled by remember { mutableStateOf<Boolean?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    val service = remember { UsageSharingPreferenceService() }
+    suspend fun sync(next: Boolean?) {
+        if (busy) return
+        busy = true
+        failed = false
+        try {
+            enabled = app.account.withVerifiedIdentity(accountId) { credential -> service.update(credential, next) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { failed = true; enabled = null }
+        finally { busy = false }
+    }
+    LaunchedEffect(accountId) { sync(null) }
+    SettingsLine(stringResource(R.string.preferences_usage_sharing), LodyIcons.Info,
+        subtitle = if (failed) stringResource(R.string.preferences_sharing_retry) else null,
+        onClick = if (failed) ({ scope.launch { sync(null) }; Unit }) else null,
+        trailing = { enabled?.let { value -> Switch(checked = value, enabled = !busy, onCheckedChange = { scope.launch { sync(it) } }) } })
 }

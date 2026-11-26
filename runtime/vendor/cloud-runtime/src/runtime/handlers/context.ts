@@ -29,8 +29,11 @@ export type RuntimeState = {
   readonly machineReplicas: Map<string, Flock>;
   readonly catalogs: Map<string, Catalog>;
   readonly unhealthy: Set<string>;
-  /** Live `${workspace}:wf:workspace` replica, written by Status view commands. */
-  workspaceReplica: (MetaReplica & { missing?: boolean }) | undefined;
+  /** Active error-free stream catch-ups keyed by watcher mode (`meta` or `machineId`). */
+  readonly catchingUp?: Map<string, Promise<void>>;
+  /** Live `${workspace}:wf:workspace` replica, shared by Status view and Agent Roles. */
+  workspaceReplica:
+    (MetaReplica & { missing?: boolean; synced?: boolean }) | undefined;
   /** Last read `pinSection` rows; `loaded` is false until the first read. */
   pinSections: { sections: PinSection[]; loaded: boolean };
 };
@@ -60,6 +63,8 @@ export type RuntimeContext = {
     replica: import('../status-view.ts').StatusViewDirtyReplica,
     flock: Flock,
   ) => void;
+  /** Observes the current meta replica, following it across reconnects. */
+  observeMeta: (wake: () => void) => () => void;
   /** Restarts the live workspace settings read, keeping the current replica. */
   refreshWorkspace: () => void;
   watch: (mode: string) => void;

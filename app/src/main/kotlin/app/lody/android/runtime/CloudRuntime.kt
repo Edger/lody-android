@@ -65,7 +65,7 @@ sealed interface RuntimeCommand {
     data object WorkspacePlan : RuntimeCommand
     /** The free-plan turn quota alone (upstream `checkTurnQuota`), before attachments upload; answers [RuntimeResult.Sent]. Read only. */
     data class TurnQuota(val sessionId: String, val billing: org.json.JSONObject? = null) : RuntimeCommand
-    data class WatchSession(val id: String) : RuntimeCommand
+    data class WatchSession(val id: String, val historyStart: Int? = null) : RuntimeCommand
     data class LoadOlderSession(val id: String) : RuntimeCommand
     data class RetryPendingInput(val sessionId: String, val inputId: String) : RuntimeCommand
     data class ForgetPendingInput(val sessionId: String, val inputId: String) : RuntimeCommand
@@ -85,6 +85,8 @@ sealed interface RuntimeCommand {
     data class ListDir(val sessionId: String, val relativePath: String) : RuntimeCommand
     /** One file's contents (upstream `readFile`, at most 2 MiB), from the session's computer. Read only. */
     data class ReadFile(val sessionId: String, val path: String) : RuntimeCommand
+    /** Shareable turns and caption metadata from the watched session (`conversationShareMessages`). Read only. */
+    data class ConversationShareMessages(val sessionId: String) : RuntimeCommand
     /** One mention category for the composer's @ panel (upstream `mentionCatalog`). Read only. */
     data class MentionCatalog(val category: String, val source: MentionSource) : RuntimeCommand
     /**
@@ -172,6 +174,7 @@ sealed interface RuntimeResult {
     data class WorkspaceChanges(val value: app.lody.android.runtime.WorkspaceChanges) : RuntimeResult
     data class Directory(val value: DirectoryListing) : RuntimeResult
     data class File(val value: FileContent) : RuntimeResult
+    data class ConversationShare(val value: ConversationShareData) : RuntimeResult
     data class Pong(val healthy: Boolean) : RuntimeResult
     data class Preview(val value: BrowserPreviewReply) : RuntimeResult
     data class Device(val value: DeviceControlReply) : RuntimeResult
@@ -455,6 +458,25 @@ data class RunChoice(
     val configOptionValues: Map<String, Any> = emptyMap(),
     val agentRoleId: String? = null, val roleKnown: Boolean = false,
 )
+data class RoostHistorySync(
+    val source: Source,
+    val phase: Phase,
+    val httpStatus: Int?,
+    val newerVersionPending: Boolean,
+) {
+    enum class Source { Machine, Streams }
+    enum class Phase(val wireValue: String) {
+        Idle("idle"),
+        Checking("checking"),
+        Pending("pending"),
+        OwnerRequired("owner-required"),
+        Syncing("syncing"),
+        Ready("ready"),
+        Retrying("retrying"),
+        Refused("refused"),
+    }
+}
+
 /** [preview]: the session's managed web preview candidate, null without one. */
 data class SessionSnapshot(
     val id: String,
@@ -469,9 +491,12 @@ data class SessionSnapshot(
     val billableTurnCount: Int? = null,
     val sendReady: Boolean = status == "live",
     val controlReady: Boolean = status == "live",
+    val historySync: RoostHistorySync? = null,
+    val historyStart: Int? = null,
 )
 sealed interface RuntimeEvent {
     data class ProvidersChanged(val machineId: String) : RuntimeEvent
+    data object RolesChanged : RuntimeEvent
     data class ProviderProgress(val machineId: String, val id: String, val status: String, val percent: Float?) : RuntimeEvent
     /** A refresh is reading [modelName]'s options, [index] of [total] (1-based). */
     data class ProviderRefreshProgress(val machineId: String, val id: String, val modelName: String, val index: Int, val total: Int) : RuntimeEvent
@@ -679,4 +704,34 @@ data class ProjectGroupMember(
     val id: String, val kind: String, val label: String, val path: String,
     val repoFullName: String? = null, val machineId: String? = null,
 )
+
+/** Decoded span in [ShareCardMessage.text]: `mention` chip or `quote` snapshot ([label]). */
+data class ShareCardReference(
+    val start: Int,
+    val end: Int,
+    val kind: String,
+    val label: String,
+)
+
+/** Persisted user or assistant prose turn prepared for the conversation share card. */
+data class ShareCardMessage(
+    val id: String,
+    val role: String,
+    val text: String,
+    val references: List<ShareCardReference> = emptyList(),
+    val estimatedTokens: Long = 0,
+    val modelName: String? = null,
+    val userTurnId: String? = null,
+)
+
+/** Session-level share card turns and caption provenance (`conversationShareMessages`). */
+data class ConversationShareData(
+    val messages: List<ShareCardMessage>,
+    val title: String,
+    val createdAt: Long,
+    val cliType: String? = null,
+    val agentType: String? = null,
+    val agentName: String? = null,
+)
+
 

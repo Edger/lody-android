@@ -14,6 +14,7 @@ internal object RuntimeProtocol {
     }
     fun event(message: JSONObject): RuntimeEvent? = when (message.getString("type")) {
         "agentProvidersChanged" -> RuntimeEvent.ProvidersChanged(message.getString("machineId"))
+        "agentRolesChanged" -> RuntimeEvent.RolesChanged
         "agentProviderRefreshProgress" -> RuntimeEvent.ProviderRefreshProgress(message.getString("machineId"), message.getString("id"),
             message.optString("modelName").ifBlank { message.getString("modelId") }, message.getInt("index"), message.getInt("total"))
         "agentProviderOperationProgress" -> RuntimeEvent.ProviderProgress(message.getString("machineId"), message.getString("id"), message.getString("status"), (message.opt("percent") as? Number)?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0f, 100f))
@@ -141,6 +142,8 @@ internal object RuntimeProtocol {
                 billableTurnCount = (envelope.opt("billableTurnCount") as? Number)?.toInt()?.takeIf { it >= 0 },
                 sendReady = (envelope.opt("sendReady") as? Boolean) ?: (status == "live"),
                 controlReady = (envelope.opt("controlReady") as? Boolean) ?: (status == "live"),
+                historySync = envelope.optJSONObject("historySync")?.let(::historySync),
+                historyStart = (message.opt("historyStart") as? Number)?.toInt()?.takeIf { it >= 0 },
             ))
         }
         "catalog" -> {
@@ -167,6 +170,19 @@ internal object RuntimeProtocol {
         "shortcutCloud" -> RuntimeEvent.ShortcutCloudRequested(message.getString("requestId"), message.getString("operation"), message.getString("args"))
         "machineToken" -> RuntimeEvent.MachineTokenRequested(message.getString("requestId"), message.getString("operation"), message.getString("intent"))
         else -> null
+    }
+    private fun historySync(value: JSONObject): RoostHistorySync? {
+        val source = RoostHistorySync.Source.entries.firstOrNull {
+            it.name.equals(value.optString("source"), ignoreCase = true)
+        } ?: return null
+        val phase = RoostHistorySync.Phase.entries.firstOrNull {
+            it.wireValue == value.optString("phase")
+        } ?: return null
+        return RoostHistorySync(
+            source, phase,
+            (value.opt("httpStatus") as? Number)?.toInt()?.takeIf { it in 100..599 },
+            value.optBoolean("newerVersionPending"),
+        )
     }
     fun schema(message: JSONObject): RuntimeResult.Schema {
         val trials = message.getJSONObject("creationOptionsTrial")
@@ -237,6 +253,40 @@ internal object RuntimeProtocol {
             json.optString("kind") == "binary" -> FileContent.Binary(path, bytes, json.optString("mimeType").ifBlank { null }, json.optString("base64"))
             else -> FileContent.Failed(path, "read_failed")
         }
+    }
+
+    /** Upstream `conversationShareMessages`: persisted prose turns and caption metadata. */
+    fun conversationShare(json: JSONObject): ConversationShareData {
+        val items = json.optJSONArray("messages")?.objects().orEmpty().mapNotNull { item ->
+            val id = item.optString("id")
+            val role = item.optString("role")
+            val text = item.optString("text")
+            if (id.isBlank() || role !in setOf("user", "assistant") || text.isBlank()) return@mapNotNull null
+            val references = item.optJSONArray("references")?.objects().orEmpty().mapNotNull { ref ->
+                val start = (ref.opt("start") as? Number)?.toInt() ?: return@mapNotNull null
+                val end = (ref.opt("end") as? Number)?.toInt() ?: return@mapNotNull null
+                val kind = ref.optString("kind")
+                if (start < 0 || end <= start || kind !in setOf("mention", "quote")) return@mapNotNull null
+                ShareCardReference(start, end, kind, ref.optString("label"))
+            }
+            ShareCardMessage(
+                id = id,
+                role = role,
+                text = text,
+                references = references,
+                estimatedTokens = ((item.opt("estimatedTokens") as? Number)?.toLong() ?: 0L).coerceAtLeast(0L),
+                modelName = (item.opt("modelName") as? String)?.takeIf { it.isNotBlank() },
+                userTurnId = (item.opt("userTurnId") as? String)?.takeIf { it.isNotBlank() },
+            )
+        }
+        return ConversationShareData(
+            messages = items,
+            title = json.optString("title"),
+            createdAt = ((json.opt("createdAt") as? Number)?.toLong() ?: 0L).coerceAtLeast(0L),
+            cliType = (json.opt("cliType") as? String)?.takeIf { it.isNotBlank() },
+            agentType = (json.opt("agentType") as? String)?.takeIf { it.isNotBlank() },
+            agentName = (json.opt("agentName") as? String)?.takeIf { it.isNotBlank() },
+        )
     }
 
     /** Upstream `itemDetail` blocks (`terminal_command` / `terminal_output` / `diff` / `text` / …), leniently. */

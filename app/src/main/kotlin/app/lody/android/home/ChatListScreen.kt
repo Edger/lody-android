@@ -379,7 +379,7 @@ fun ChatListScreen(
     BackHandler(enabled = searching) { closeSearch() }
 
     if (preferencesOpen) {
-        PreferencesScreen(onBack = { preferencesOpen = false })
+        PreferencesScreen(accountId = scope?.accountId, onBack = { preferencesOpen = false })
         return
     }
     if (shortcutsOpen) {
@@ -395,7 +395,7 @@ fun ChatListScreen(
         return
     }
     if (rolesOpen) {
-        RolesScreen(state, roleSettings, scope, onBack = { rolesOpen = false })
+        RolesScreen(state, roleSettings, scope, settingsCache, onBack = { rolesOpen = false })
         return
     }
     if (agentsOpen) {

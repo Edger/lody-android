@@ -63,7 +63,7 @@ export function contractBridge(runtime, emit) {
   setActive:async active=>{await invoke('setActive',{active});return true;},
   start:async(workspaceId,userId='',active=false,workspaceReadOnly=false)=>{workspace=workspaceId;await invoke('start',{workspaceId,userId,active,...(workspaceReadOnly?{workspaceReadOnly:true}:{})});return true;},
   probeSchema:()=>workspace?invoke('probeSchema',{workspaceId:workspace}):ready.then(()=>({creationOptionsTrial:{},machines:{}})),
-  session:id=>invoke('openSession',{sessionId:id}),
+  session:(id,historyStart)=>invoke('openSession',{sessionId:id,...(historyStart===undefined?{}:{historyStart})}),
   loadOlderSession:args=>invoke('loadOlderSession',args),
   forgetPendingInput:args=>invoke('forgetPendingInput',args),
   retryPendingInput:args=>invoke('retryPendingInput',args),
@@ -107,6 +107,7 @@ export function contractBridge(runtime, emit) {
   // The browse-files sheet: one folder of the session's local project, and one file's contents.
   listDir:args=>invoke('listDir',args),
   readFile:args=>invoke('readFile',args),
+  conversationShareMessages:args=>invoke('conversationShareMessages',args),
   // Schedules: the list with time zones, one schedule's detail, and owner writes (the runtime's 70 s budget).
   schedules:args=>invoke('schedules',args),
   scheduleDetail:args=>invoke('scheduleDetail',args),

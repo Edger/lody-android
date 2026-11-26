@@ -141,6 +141,7 @@ const state: RuntimeState = {
   machineReplicas: new Map(),
   catalogs: new Map(),
   unhealthy: new Set(),
+  catchingUp: new Map(),
   workspaceReplica: undefined,
   pinSections: { sections: [], loaded: false },
 };
@@ -370,7 +371,36 @@ function scheduleStatusRefresh(at: number | null) {
     publish();
   }, delay);
 }
+/**
+ * Metadata observers follow the current meta replica. A reconnect replaces
+ * that replica, so callers never subscribe to a Flock captured earlier.
+ */
+const metaObservers = new Set<() => void>();
+let metaObserved: { flock: Flock; unsubscribe: () => void } | undefined;
+function notifyMetaObservers() {
+  for (const wake of [...metaObservers]) wake();
+}
+function followMetaReplica(notify: boolean) {
+  const flock = metaObservers.size ? state.metaReplica?.flock : undefined;
+  if (metaObserved?.flock === flock) return;
+  metaObserved?.unsubscribe();
+  metaObserved = flock && {
+    flock,
+    unsubscribe: flock.subscribe(notifyMetaObservers),
+  };
+  if (flock && notify) notifyMetaObservers();
+}
+function observeMeta(wake: () => void) {
+  metaObservers.add(wake);
+  followMetaReplica(false);
+  return () => {
+    metaObservers.delete(wake);
+    followMetaReplica(false);
+  };
+}
 function publish() {
+  // Every installed or caught-up catalog publishes; follow a replaced replica.
+  followMetaReplica(true);
   if (publishTimer !== undefined) return;
   // Read the current scope at flush time; never retain an old catalog payload.
   publishTimer = setTimeout(() => {
@@ -463,11 +493,37 @@ function watch(mode: string) {
   // sections through failures.
   const workspaceStream = mode === WORKSPACE_STREAM;
   const markUnhealthy = () => {
-    if (!workspaceStream) unhealthy.add(mode);
+    if (workspaceStream) {
+      if (state.workspaceReplica) state.workspaceReplica.synced = false;
+      return;
+    }
+    unhealthy.add(mode);
   };
+  let finishCatchUp: (() => void) | undefined;
+  const startCatchUp = () => {
+    if (workspaceStream) {
+      if (state.workspaceReplica) state.workspaceReplica.synced = false;
+      return;
+    }
+    unhealthy.add(mode);
+    if (finishCatchUp || !state.catchingUp) return;
+    let pending!: Promise<void>;
+    pending = new Promise<void>((resolve) => {
+      finishCatchUp = () => {
+        finishCatchUp = undefined;
+        if (state.catchingUp?.get(mode) === pending)
+          state.catchingUp.delete(mode);
+        resolve();
+      };
+    });
+    state.catchingUp.set(mode, pending);
+  };
+  const endCatchUp = () => finishCatchUp?.();
+  watchers.get(mode)?.abort();
   const controller = new AbortController();
   watchers.set(mode, controller);
   const { signal } = controller;
+  signal.addEventListener('abort', endCatchUp, { once: true });
   const reportError = (
     reason:
       'catalog_limit' | 'stream_closed' | 'stalled_cursor' | 'network_or_auth',
@@ -484,6 +540,7 @@ function watch(mode: string) {
   void (async () => {
     let failures = 0;
     let providerSignature = '';
+    let roleSignature = '';
     let preparedBootstrap: Awaited<ReturnType<typeof readCatalogRefresh>>;
     while (!signal.aborted) {
       let caughtUp = false;
@@ -510,7 +567,9 @@ function watch(mode: string) {
         });
         if (mode !== 'meta' && !workspaceStream)
           releaseBootstrap = await acquireCatalogBootstrap(signal);
-        const checkpoint = catalogImportCheckpoint(signal);
+        const checkpoint = catalogImportCheckpoint(signal, () => {
+          if (caughtUp) startCatchUp();
+        });
         channel.emit('diagnostic', { stage: 'bootstrap', stream: mode });
         const initial = preparedBootstrap
           ? { ok: true as const, result: preparedBootstrap }
@@ -530,8 +589,13 @@ function watch(mode: string) {
                 flock: new Flock(`lody-ios-${crypto.randomUUID()}`),
                 client,
                 missing: true,
+                synced: false,
               };
               state.pinSections = { sections: [], loaded: true };
+            }
+            if (roleSignature !== '[]') {
+              roleSignature = '[]';
+              channel.emit('agentRolesChanged', {});
             }
             publish();
             await delay(30000, signal);
@@ -539,6 +603,7 @@ function watch(mode: string) {
           }
           if (initial.result.code === 'not_found' && mode !== 'meta') {
             unhealthy.delete(mode);
+            endCatchUp();
             catalogs.set(mode, { projects: [], sessions: [], machineIds: [] });
             publish();
             releaseBootstrap();
@@ -583,18 +648,38 @@ function watch(mode: string) {
               throw new Error('workspace_changed');
             caughtUp = true;
             if (state.workspaceReplica?.flock !== flock)
-              state.workspaceReplica = { flock, client };
+              state.workspaceReplica = { flock, client, synced: true };
+            else {
+              state.workspaceReplica.missing = false;
+              state.workspaceReplica.synced = true;
+            }
             await checkpoint();
             state.pinSections = {
               sections: pinSectionRows(flock.scan({ prefix: ['pinSection'] })),
               loaded: true,
             };
+            const nextRoleSignature = JSON.stringify(
+              flock
+                .scan({ prefix: ['agentRole'] })
+                .filter(
+                  (row) => row.key.length === 2 && row.key[0] === 'agentRole',
+                )
+                .map((row) => [String(row.key[1]), row.value] as const)
+                .sort(([a], [b]) => a.localeCompare(b)),
+            );
+            if (nextRoleSignature !== roleSignature) {
+              roleSignature = nextRoleSignature;
+              channel.emit('agentRolesChanged', {});
+            }
             publish();
             checkedWindow = false;
             failures = 0;
             pages = 0;
             size = 0;
           } else if (upToDate) {
+            await checkpoint();
+            const rows = flock.scan();
+            catalogs.set(mode, projectRows(rows, mode));
             caughtUp = true;
             if (mode === 'meta') {
               const first = !state.metaReplica;
@@ -602,12 +687,14 @@ function watch(mode: string) {
               // compare it to detect a reconnect, not a routine update.
               if (state.metaReplica?.flock !== flock)
                 state.metaReplica = { flock, client };
+              unhealthy.delete(mode);
+              endCatchUp();
               if (first) resumeAcceptedInputs();
-            } else machineReplicas.set(mode, flock);
-            unhealthy.delete(mode);
-            await checkpoint();
-            const rows = flock.scan();
-            catalogs.set(mode, projectRows(rows, mode));
+            } else {
+              machineReplicas.set(mode, flock);
+              unhealthy.delete(mode);
+              endCatchUp();
+            }
             if (mode !== 'meta') {
               const nextSignature = JSON.stringify(
                 providerRows(flock, mode, false, rows),
@@ -666,6 +753,7 @@ function watch(mode: string) {
             (error) => {
               livePoll = false;
               markUnhealthy();
+              endCatchUp();
               channel.emit('creationOptionsChanged', {});
               reportError('network_or_auth');
               if (!(
@@ -695,10 +783,11 @@ function watch(mode: string) {
               throw new Error('catalog_rebootstrap');
             }
           }
-          if (next.payload?.body.length || !next.upToDate) markUnhealthy();
+          if (!next.upToDate) startCatchUp();
           if (next.payload) {
             size += next.payload.body.length;
             if (size > 16 * 1024 * 1024) throw new Error('catalog_limit');
+            checkpoint.reset?.();
             await importCatalogUpdates(flock, next.payload.body, checkpoint);
           }
           if (next.nextOffset === offset && !next.upToDate)
@@ -718,6 +807,7 @@ function watch(mode: string) {
         else if (workspaceStream) state.workspaceReplica = undefined;
         else machineReplicas.delete(mode);
         markUnhealthy();
+        endCatchUp();
         channel.emit('creationOptionsChanged', {});
         const reason = error instanceof Error ? error.message : 'sync_failed';
         if (
@@ -749,6 +839,7 @@ function watch(mode: string) {
         }
       } finally {
         releaseBootstrap();
+        endCatchUp();
       }
     }
   })();
@@ -764,6 +855,7 @@ const ctx: RuntimeContext = {
   markDispatch,
   statusSources,
   discardReplica,
+  observeMeta,
   refreshWorkspace() {
     watchers.get(WORKSPACE_STREAM)?.abort();
     watchers.delete(WORKSPACE_STREAM);

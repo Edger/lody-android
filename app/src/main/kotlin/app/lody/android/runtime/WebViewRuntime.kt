@@ -186,7 +186,9 @@ open class WebViewRuntime internal constructor(
             RuntimeResult.Sent(value.optString("state", "unknown"), value.optString("reason").ifBlank { null })
         }
         is RuntimeCommand.WatchSession -> {
-            call("watchSession", JSONArray().put(command.id), CommandDeadline.QUERY)
+            val args = JSONArray().put(command.id)
+            command.historyStart?.let { args.put(it) }
+            call("watchSession", args, CommandDeadline.QUERY)
             RuntimeResult.Accepted
         }
         is RuntimeCommand.RetryPendingInput -> {
@@ -229,6 +231,10 @@ open class WebViewRuntime internal constructor(
         is RuntimeCommand.ReadFile -> {
             val value = call("readFile", JSONArray().put(command.sessionId).put(command.path), CommandDeadline.FILE_READ)
             RuntimeResult.File(RuntimeProtocol.file(value as? JSONObject ?: JSONObject(), command.path))
+        }
+        is RuntimeCommand.ConversationShareMessages -> {
+            val value = call("conversationShareMessages", JSONArray().put(command.sessionId), CommandDeadline.QUERY)
+            RuntimeResult.ConversationShare(RuntimeProtocol.conversationShare(value as? JSONObject ?: JSONObject()))
         }
         is RuntimeCommand.StopTurn -> {
             call("controlTurn", JSONArray().put(command.sessionId).put(command.machineId).put(command.turnId), CommandDeadline.WRITE)
