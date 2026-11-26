@@ -451,6 +451,25 @@ data class RunChoice(
     val configOptionValues: Map<String, Any> = emptyMap(),
     val agentRoleId: String? = null, val roleKnown: Boolean = false,
 )
+data class RoostHistorySync(
+    val source: Source,
+    val phase: Phase,
+    val httpStatus: Int?,
+    val newerVersionPending: Boolean,
+) {
+    enum class Source { Machine, Streams }
+    enum class Phase(val wireValue: String) {
+        Idle("idle"),
+        Checking("checking"),
+        Pending("pending"),
+        OwnerRequired("owner-required"),
+        Syncing("syncing"),
+        Ready("ready"),
+        Retrying("retrying"),
+        Refused("refused"),
+    }
+}
+
 /** [preview]: the session's managed web preview candidate, null without one. */
 data class SessionSnapshot(
     val id: String,
@@ -465,6 +484,7 @@ data class SessionSnapshot(
     val billableTurnCount: Int? = null,
     val sendReady: Boolean = status == "live",
     val controlReady: Boolean = status == "live",
+    val historySync: RoostHistorySync? = null,
     val historyStart: Int? = null,
 )
 sealed interface RuntimeEvent {

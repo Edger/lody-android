@@ -147,6 +147,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     }
     var historyHasMore by remember(id, scope) { mutableStateOf(false) }
     var historyLoading by remember(id, scope) { mutableStateOf(false) }
+    var historySync by remember(id, scope) { mutableStateOf<RoostHistorySync?>(null) }
     // User turns plus queued inputs, as the free-plan quota counts them (runtime `billableTurnCount`).
     var billableTurns by remember(id, scope) { mutableStateOf<Int?>(null) }
     var messages by remember(id, scope) { mutableStateOf(emptyList<SessionMessage>()) }
@@ -263,6 +264,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 status = snapshot.status
                 sendReady = snapshot.sendReady
                 controlReady = snapshot.controlReady
+                historySync = snapshot.historySync
                 if (snapshot.messages.any { it.streaming }) delay(33)
             }
         } finally { repair.close() }
@@ -1338,24 +1340,38 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                     context.session?.isTabClosed == true || creationUnconfirmed || isDraftTab -> null
                     status == "offline" -> "paused"
                     status != "live" && connectingShown -> "connecting"
+                    historySync != null -> "history"
                     else -> null
                 }
                 if (connectionSlot != null) {
                     val paused = connectionSlot == "paused"
-                    val statusLabel = stringResource(if (paused) R.string.chat_connection_paused else R.string.chat_connection_connecting)
+                    val historyLabel = historySync?.let { historySyncLabel(it) }
+                    val connectionLabel = when (connectionSlot) {
+                        "paused" -> stringResource(R.string.chat_connection_paused)
+                        "connecting" -> stringResource(R.string.chat_connection_connecting)
+                        else -> null
+                    }
+                    val statusLabel = listOfNotNull(historyLabel, connectionLabel).joinToString("\n")
+                    val inset = if (historyLabel != null) TranscriptMargin + LodySize.controlMd else TranscriptMargin
                     Box(
                         Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(start = TranscriptMargin, end = TranscriptMargin, bottom = LodySpacing.md)
+                            .padding(start = inset, end = inset, bottom = LodySpacing.md)
                             .dropShadow(CircleShape, LodyElevations.sm.shadow())
                             .clip(CircleShape)
                             .background(colors.bgOverlay)
                             .border(0.5.dp, colors.borderSubtle, CircleShape)
-                            .then(if (paused) Modifier.clickable(role = Role.Button) { manualReconnect = true; connectingShown = true; retry++ } else Modifier)
+                            .then(if (paused) Modifier.clickable(role = Role.Button) {
+                                historySync = null
+                                manualReconnect = true
+                                connectingShown = true
+                                retry++
+                            } else Modifier)
                             .padding(horizontal = LodySpacing.md, vertical = LodySpacing.xs + LodySpacing.xxs)
                             .semantics { contentDescription = statusLabel },
                     ) {
-                        Text(statusLabel, style = LodyTheme.typography.subhead, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(statusLabel, style = LodyTheme.typography.subhead, color = colors.textPrimary,
+                            maxLines = if (historyLabel == null) 1 else 4, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 // Web's round "scroll to latest" button, shown once the reader has scrolled up.
@@ -1596,6 +1612,33 @@ private const val UncommittedCacheTtlMs = 5_000L
 
 /** The conversation page's Status view actions; [tier] decides which apply. */
 internal class StatusMenu(val settle: Boolean, val focus: Boolean, val onLater: () -> Unit, val onSettle: () -> Unit, val onFocus: () -> Unit)
+
+@Composable
+private fun historySyncLabel(sync: RoostHistorySync): String {
+    val source = stringResource(if (sync.source == RoostHistorySync.Source.Machine)
+        R.string.chat_history_sync_machine else R.string.chat_history_sync_streams)
+    val httpStatus = sync.httpStatus
+    val detail = when (sync.phase) {
+        RoostHistorySync.Phase.Idle, RoostHistorySync.Phase.Ready -> null
+        RoostHistorySync.Phase.Checking -> stringResource(R.string.chat_history_sync_checking)
+        RoostHistorySync.Phase.Pending -> stringResource(R.string.chat_history_sync_pending)
+        RoostHistorySync.Phase.OwnerRequired -> stringResource(R.string.chat_history_sync_owner_required)
+        RoostHistorySync.Phase.Syncing -> stringResource(R.string.chat_history_sync_syncing)
+        RoostHistorySync.Phase.Retrying -> when (httpStatus) {
+            403 -> stringResource(R.string.chat_history_sync_unconfirmed)
+            null -> stringResource(R.string.chat_history_sync_retrying)
+            else -> stringResource(R.string.chat_history_sync_retrying_http, httpStatus)
+        }
+        RoostHistorySync.Phase.Refused -> when (httpStatus) {
+            401, 403 -> stringResource(R.string.chat_history_sync_denied)
+            null -> stringResource(R.string.chat_history_sync_unavailable)
+            else -> stringResource(R.string.chat_history_sync_refused, httpStatus)
+        }
+    }
+    val previous = if (sync.source == RoostHistorySync.Source.Streams && sync.newerVersionPending)
+        stringResource(R.string.chat_history_sync_previous) else null
+    return listOfNotNull(source, previous, detail).joinToString("\n")
+}
 
 /** Floating header: title over the tappable machine subtitle, with conditional Tabs and More. */
 @Composable
