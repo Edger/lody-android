@@ -10,11 +10,13 @@ export function cloudCommands(runtime, access, stopSessions) {
    // A read-only member (viewer) is offered no Status view, pin or section writes by the runtime.
    return runtime.start(workspaceId,userId,Boolean(userId),workspaceReadOnly===true);
   },
-  watchSession(id,historyStart) {
+  watchSession(id,historyStart,_signal) {
    if(!connected)throw Error('not_connected');
    if(typeof id!=='string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id))throw Error('invalid_session');
    stopSessions();selected=id;
-   return runtime.session(id,historyStart);
+   // The dispatcher appends its AbortSignal to every command, so an omitted historyStart arrives
+   // in this position; only a non-negative integer from native is a history start.
+   return runtime.session(id,Number.isInteger(historyStart)&&historyStart>=0?historyStart:undefined);
   },
   closeSession(id) {
    if(selected===id){stopSessions();selected=undefined;}
