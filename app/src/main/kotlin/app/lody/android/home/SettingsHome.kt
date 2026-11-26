@@ -58,7 +58,6 @@ internal fun SettingsHome(state: ChatListUiState, padding: PaddingValues, onSele
         item {
             SettingsGroup(stringResource(R.string.settings_additional)) {
                 SettingsLine(stringResource(R.string.settings_about), LodyIcons.Info, stringResource(R.string.settings_about_hint), onDeferred)
-                SettingsLine(stringResource(R.string.settings_diagnostics), LodyIcons.StateRunning, onClick = onDeferred)
             }
         }
         // Always the last group; the Roost beta switch follows Developer mode only while it is on.

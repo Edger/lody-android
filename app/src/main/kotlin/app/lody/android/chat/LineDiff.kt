@@ -17,7 +17,31 @@ object LineDiff {
     /** A run of shown lines; [skippedBefore] unchanged lines were folded away above it. */
     data class Hunk(val lines: List<Line>, val skippedBefore: Int)
 
+    /** One split-view row: old and new sides, either may be empty. A context line is both sides. */
+    data class Pair(val left: Line?, val right: Line?)
+
     data class Result(val hunks: List<Hunk>, val skippedAfter: Int, val tooLarge: Boolean = false)
+
+    /** Split-view rows for one hunk: removals and additions pair up by position, context pairs itself. */
+    fun pairs(lines: List<Line>): List<Pair> {
+        val out = ArrayList<Pair>(lines.size)
+        val removed = ArrayList<Line>()
+        val added = ArrayList<Line>()
+        fun flush() {
+            for (index in 0 until maxOf(removed.size, added.size)) {
+                out += Pair(removed.getOrNull(index), added.getOrNull(index))
+            }
+            removed.clear()
+            added.clear()
+        }
+        for (line in lines) when (line.kind) {
+            Kind.Removed -> { if (added.isNotEmpty()) flush(); removed += line }
+            Kind.Added -> added += line
+            Kind.Context -> { flush(); out += Pair(line, line) }
+        }
+        flush()
+        return out
+    }
 
     fun compute(old: String, new: String, context: Int = 3, limit: Long = 4_000_000): Result {
         val a = lines(old)
@@ -109,12 +133,12 @@ object LineDiff {
     private fun pivots(
         a: List<String>, a0: Int, a1: Int,
         b: List<String>, b0: Int, b1: Int,
-    ): List<Pair<Int, Int>> {
+    ): List<kotlin.Pair<Int, Int>> {
         val inA = HashMap<String, Int>()
         for (i in a0 until a1) inA[a[i]] = if (inA.containsKey(a[i])) -1 else i
         val inB = HashMap<String, Int>()
         for (j in b0 until b1) inB[b[j]] = if (inB.containsKey(b[j])) -1 else j
-        val candidates = ArrayList<Pair<Int, Int>>()
+        val candidates = ArrayList<kotlin.Pair<Int, Int>>()
         for (i in a0 until a1) {
             val line = a[i]
             if (inA[line] != i) continue
@@ -137,7 +161,7 @@ object LineDiff {
             tails[lo] = k
             if (lo == length) length++
         }
-        val out = ArrayList<Pair<Int, Int>>(length)
+        val out = ArrayList<kotlin.Pair<Int, Int>>(length)
         var k = if (length == 0) -1 else tails[length - 1]
         while (k >= 0) {
             out += candidates[k]

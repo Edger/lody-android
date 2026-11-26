@@ -747,7 +747,6 @@
     <string name="settings_additional">その他</string>
     <string name="settings_about">このアプリについて</string>
     <string name="settings_about_hint">バージョン、ライセンス、謝辞</string>
-    <string name="settings_diagnostics">診断</string>
     <string name="settings_deferred">この設定ページは今後のアップデートで提供予定です。</string>
     <string name="settings_agent_machines">マシン</string>
     <string name="settings_agent_providers">プロバイダー</string>

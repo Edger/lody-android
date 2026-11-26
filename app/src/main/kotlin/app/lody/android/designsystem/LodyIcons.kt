@@ -602,6 +602,27 @@ object LodyIcons {
         )
     }
 
+    /** Lucide `wrap-text`: the diff's wrapped-line setting. */
+    val TextWrap: ImageVector by lazy {
+        lodyIcon(
+            "TextWrap",
+            "M3 6h18",
+            "M3 12h15a3 3 0 1 1 0 6h-4",
+            "m16 16-2 2 2 2",
+            "M3 18h7",
+        )
+    }
+
+    /** Lucide `move-horizontal`: the diff's source-width, horizontally scrollable setting. */
+    val MoveHorizontal: ImageVector by lazy {
+        lodyIcon(
+            "MoveHorizontal",
+            "m18 8 4 4-4 4",
+            "m6 8-4 4 4 4",
+            "M2 12h20",
+        )
+    }
+
     val StateIdle: ImageVector by lazy {
         lodyIcon(
             "StateIdle",
@@ -789,6 +810,8 @@ object LodyIcons {
             "hand" to Hand,
             "merge" to Merge,
             "diff" to Diff,
+            "textWrap" to TextWrap,
+            "moveHorizontal" to MoveHorizontal,
             "stateIdle" to StateIdle,
             "stateRunning" to StateRunning,
             "stateWaiting" to StateWaiting,
