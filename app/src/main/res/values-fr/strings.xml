@@ -747,7 +747,6 @@
     <string name="settings_additional">Autres</string>
     <string name="settings_about">À propos</string>
     <string name="settings_about_hint">Version, licences et remerciements</string>
-    <string name="settings_diagnostics">Diagnostics</string>
     <string name="settings_deferred">Cette page de paramètres est prévue pour une prochaine mise à jour.</string>
     <string name="settings_agent_machines">Machines</string>
     <string name="settings_agent_providers">Fournisseurs</string>

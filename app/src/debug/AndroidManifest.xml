@@ -3,6 +3,7 @@
         <activity android:name="app.lody.android.diagnostics.AgentSettingsProbeActivity" android:exported="true" android:windowSoftInputMode="adjustResize" />
         <activity android:name="app.lody.android.diagnostics.ImageStatesProbeActivity" android:exported="true" />
         <activity android:name="app.lody.android.diagnostics.ComposerMotionProbeActivity" android:exported="true" android:windowSoftInputMode="adjustResize" />
+        <activity android:name="app.lody.android.diagnostics.DiffProbeActivity" android:exported="true" />
         <activity android:name="app.lody.android.diagnostics.CreateSessionProbeActivity" android:exported="true" android:windowSoftInputMode="adjustResize" />
         <activity android:name="app.lody.android.diagnostics.StickyGroupsProbeActivity" android:exported="true" />
         <activity android:name="app.lody.android.diagnostics.CloudProbeActivity" android:exported="true" />

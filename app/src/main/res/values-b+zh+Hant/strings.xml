@@ -747,7 +747,6 @@
     <string name="settings_additional">其他</string>
     <string name="settings_about">關於</string>
     <string name="settings_about_hint">版本、授權條款與致謝</string>
-    <string name="settings_diagnostics">診斷</string>
     <string name="settings_deferred">此設定頁面預計於後續更新中推出。</string>
     <string name="settings_agent_machines">主機</string>
     <string name="settings_agent_providers">提供者</string>

@@ -795,7 +795,6 @@
     <string name="settings_additional">Дополнительно</string>
     <string name="settings_about">О приложении</string>
     <string name="settings_about_hint">Версия, лицензии и благодарности</string>
-    <string name="settings_diagnostics">Диагностика</string>
     <string name="settings_deferred">Этот раздел настроек появится в одном из следующих обновлений.</string>
     <string name="settings_agent_machines">Компьютеры</string>
     <string name="settings_agent_providers">Провайдеры</string>
