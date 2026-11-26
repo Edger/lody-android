@@ -100,14 +100,27 @@ class SessionImageSource(private val reader: SessionImageReader, private val sco
         val width = if (full) null else THUMBNAIL_WIDTH
         val key = key(image, width)
         cache.get(key)?.let { return it }
-        val bytes = if (full) original(image) else reader.read(scope, sessionId, image, width)
+        val bytes = if (full) original(image) else try {
+            reader.read(scope, sessionId, image, width)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // As iOS `ChatImageCell`: the original still shows when the thumbnail does not.
+            // Errors propagate: an OutOfMemoryError must not start a second, larger download.
+            original(image)
+        }
         val bitmap = withContext(Dispatchers.Default) { decode(bytes, maxSide) } ?: throw SessionImageFailure("decode")
         cache.put(key, bitmap)
         return bitmap
     }
 
     /** The original bytes for copy / save / share (the thumbnail is never shared). */
-    suspend fun original(image: TurnImage): ByteArray = reader.read(scope, sessionId, image, null)
+    suspend fun original(image: TurnImage): ByteArray {
+        val key = key(image, null)
+        originals.get(key)?.let { return it }
+        // Cached so a thumbnail fallback, the viewer and Save share one download.
+        return reader.read(scope, sessionId, image, null).also { originals.put(key, it) }
+    }
 
     private fun decode(bytes: ByteArray, maxSide: Int): ImageBitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -124,6 +137,10 @@ class SessionImageSource(private val reader: SessionImageReader, private val sco
         /** About 48 MiB of decoded bitmaps across conversations. */
         private val cache = object : LruCache<String, ImageBitmap>(48 * 1024 * 1024) {
             override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
+        }
+        /** Originals already downloaded, so the fallback and the viewer never fetch twice. */
+        private val originals = object : LruCache<String, ByteArray>(16 * 1024 * 1024) {
+            override fun sizeOf(key: String, value: ByteArray) = value.size
         }
     }
 }

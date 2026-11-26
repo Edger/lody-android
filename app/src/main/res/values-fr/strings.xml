@@ -103,6 +103,7 @@
     <string name="chat_image_next">Image suivante</string>
     <string name="chat_image_previous">Image précédente</string>
     <string name="chat_image_failed">Impossible de charger l’image. Touchez pour réessayer.</string>
+    <string name="chat_image_retry">Réessayer le chargement de l’image</string>
     <string name="chat_image_close">Fermer l’image</string>
     <string name="chat_mermaid_open">Afficher en plein écran</string>
     <string name="chat_mermaid_close">Fermer le diagramme</string>
@@ -111,6 +112,14 @@
     <string name="chat_image_save">Enregistrer dans la galerie</string>
     <string name="chat_image_copied">Image copiée</string>
     <string name="chat_image_saved">Enregistrée dans Pictures/Lody</string>
+    <string name="debug_images_title">États des images</string>
+    <string name="debug_images_hint">Aperçu développeur des images de la conversation, alimenté par une source factice. Touchez une image chargée pour ouvrir la visionneuse ; touchez une image en échec pour réessayer.</string>
+    <string name="debug_images_compact">Vignettes des pièces jointes</string>
+    <string name="debug_images_agent">Cartes d’images de l’agent</string>
+    <string name="debug_images_stack">Pile d’images</string>
+    <string name="debug_images_loaded">Chargée</string>
+    <string name="debug_images_loading">Chargement</string>
+    <string name="debug_images_failed">Échec</string>
     <string name="chat_image_save_failed">Impossible d’enregistrer l’image</string>
     <string name="chat_image_unavailable">L’image n’est pas encore disponible</string>
     <string name="create_title">Nouvelle session</string>
