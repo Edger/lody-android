@@ -50,10 +50,6 @@
     <string name="home_tree_collapse">Ocultar chats abiertos</string>
     <string name="home_tree_expanded">Expandido</string>
     <string name="home_tree_collapsed">Contraído</string>
-    <plurals name="home_tree_count">
-        <item quantity="one">%1$d chat abierto</item>
-        <item quantity="other">%1$d chats abiertos</item>
-    </plurals>
     <string name="home_view_scope">Mostrar</string>
     <string name="home_scope_mine">Mis tareas</string>
     <string name="home_scope_team">Tareas del equipo</string>
@@ -410,6 +406,23 @@
     <string name="chat_diff_not_tracked">Este archivo está fuera del repositorio, por lo que no hay una versión anterior para comparar.</string>
     <string name="chat_diff_workspace_unavailable">No se pudieron cargar los cambios del espacio de trabajo. Revisa la conexión del equipo e inténtalo de nuevo.</string>
     <string name="chat_diff_same">Sin cambios en las líneas.</string>
+    <string name="chat_diff_line_too_long">(Línea demasiado larga; cambia al modo de ajuste de línea para verla)</string>
+    <string name="chat_diff_line_truncated">(Línea demasiado larga; truncada aquí)</string>
+    <string name="chat_diff_more">Más acciones de diferencias</string>
+    <string name="chat_diff_unified">Unificado</string>
+    <string name="chat_diff_split">Dividido</string>
+    <string name="chat_diff_wrap">Ajustar líneas</string>
+    <string name="chat_diff_no_wrap">No ajustar líneas</string>
+    <string name="chat_diff_copy_file_name">Copiar nombre del archivo</string>
+    <string name="chat_diff_copy_path">Copiar ruta</string>
+    <string name="chat_diff_copy_contents">Copiar contenido</string>
+    <string name="chat_diff_copy_patch">Copiar parche</string>
+    <string name="chat_diff_preview_file">Previsualizar archivo</string>
+    <string name="chat_diff_preview_back">Volver a las diferencias</string>
+    <string name="chat_diff_copied">Copiado</string>
+    <string name="chat_diff_copy_too_large">Demasiado grande para copiar</string>
+    <string name="chat_diff_base_turn">Este turno</string>
+    <string name="chat_diff_base_current">Actual</string>
     <plurals name="chat_diff_unchanged">
         <item quantity="one">⋯ %d línea sin cambios</item>
         <item quantity="other">⋯ %d líneas sin cambios</item>

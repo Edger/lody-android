@@ -50,10 +50,6 @@
     <string name="home_tree_collapse">Masquer les discussions ouvertes</string>
     <string name="home_tree_expanded">Développé</string>
     <string name="home_tree_collapsed">Réduit</string>
-    <plurals name="home_tree_count">
-        <item quantity="one">%1$d discussion ouverte</item>
-        <item quantity="other">%1$d discussions ouvertes</item>
-    </plurals>
     <string name="home_view_scope">Afficher</string>
     <string name="home_scope_mine">Mes tâches</string>
     <string name="home_scope_team">Tâches de l’équipe</string>
@@ -410,6 +406,23 @@
     <string name="chat_diff_not_tracked">Ce fichier est en dehors du dépôt, il n\'y a donc aucune version antérieure à comparer.</string>
     <string name="chat_diff_workspace_unavailable">Impossible de charger les modifications de l\'espace de travail. Vérifiez la connexion de l\'ordinateur et réessayez.</string>
     <string name="chat_diff_same">Aucune ligne modifiée.</string>
+    <string name="chat_diff_line_too_long">(Ligne trop longue ; passez à l\'affichage avec retour à la ligne pour la voir)</string>
+    <string name="chat_diff_line_truncated">(Ligne trop longue ; tronquée ici)</string>
+    <string name="chat_diff_more">Autres actions du diff</string>
+    <string name="chat_diff_unified">Unifié</string>
+    <string name="chat_diff_split">Côte à côte</string>
+    <string name="chat_diff_wrap">Retour à la ligne</string>
+    <string name="chat_diff_no_wrap">Ne pas revenir à la ligne</string>
+    <string name="chat_diff_copy_file_name">Copier le nom du fichier</string>
+    <string name="chat_diff_copy_path">Copier le chemin</string>
+    <string name="chat_diff_copy_contents">Copier le contenu</string>
+    <string name="chat_diff_copy_patch">Copier le patch</string>
+    <string name="chat_diff_preview_file">Aperçu du fichier</string>
+    <string name="chat_diff_preview_back">Retour au diff</string>
+    <string name="chat_diff_copied">Copié</string>
+    <string name="chat_diff_copy_too_large">Trop volumineux pour être copié</string>
+    <string name="chat_diff_base_turn">Ce tour</string>
+    <string name="chat_diff_base_current">Actuel</string>
     <plurals name="chat_diff_unchanged">
         <item quantity="one">⋯ %d ligne inchangée</item>
         <item quantity="other">⋯ %d lignes inchangées</item>

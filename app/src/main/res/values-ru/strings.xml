@@ -50,12 +50,6 @@
     <string name="home_tree_collapse">Скрыть открытые чаты</string>
     <string name="home_tree_expanded">Развёрнуто</string>
     <string name="home_tree_collapsed">Свёрнуто</string>
-    <plurals name="home_tree_count">
-        <item quantity="few">%1$d открытых чата</item>
-        <item quantity="many">%1$d открытых чатов</item>
-        <item quantity="one">%1$d открытый чат</item>
-        <item quantity="other">%1$d открытых чатов</item>
-    </plurals>
     <string name="home_view_scope">Показывать</string>
     <string name="home_scope_mine">Мои задачи</string>
     <string name="home_scope_team">Задачи команды</string>
@@ -440,6 +434,23 @@
     <string name="chat_diff_not_tracked">Этот файл находится вне репозитория, поэтому нет предыдущей версии для сравнения.</string>
     <string name="chat_diff_workspace_unavailable">Не удалось загрузить изменения рабочей области. Проверьте подключение к компьютеру и повторите попытку.</string>
     <string name="chat_diff_same">Нет изменений в строках.</string>
+    <string name="chat_diff_line_too_long">(Строка слишком длинная; включите перенос строк, чтобы увидеть её)</string>
+    <string name="chat_diff_line_truncated">(Строка слишком длинная; здесь она обрезана)</string>
+    <string name="chat_diff_more">Другие действия с изменениями</string>
+    <string name="chat_diff_unified">Объединённый</string>
+    <string name="chat_diff_split">Разделённый</string>
+    <string name="chat_diff_wrap">Перенос строк</string>
+    <string name="chat_diff_no_wrap">Без переноса строк</string>
+    <string name="chat_diff_copy_file_name">Копировать имя файла</string>
+    <string name="chat_diff_copy_path">Копировать путь</string>
+    <string name="chat_diff_copy_contents">Копировать содержимое</string>
+    <string name="chat_diff_copy_patch">Копировать патч</string>
+    <string name="chat_diff_preview_file">Просмотреть файл</string>
+    <string name="chat_diff_preview_back">Назад к изменениям</string>
+    <string name="chat_diff_copied">Скопировано</string>
+    <string name="chat_diff_copy_too_large">Слишком большой объём для копирования</string>
+    <string name="chat_diff_base_turn">Этот ответ</string>
+    <string name="chat_diff_base_current">Текущее</string>
     <plurals name="chat_diff_unchanged">
         <item quantity="few">⋯ %d строки без изменений</item>
         <item quantity="many">⋯ %d строк без изменений</item>

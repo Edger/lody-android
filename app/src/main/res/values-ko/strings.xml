@@ -50,10 +50,6 @@
     <string name="home_tree_collapse">열린 채팅 숨기기</string>
     <string name="home_tree_expanded">펼쳐짐</string>
     <string name="home_tree_collapsed">접힘</string>
-    <plurals name="home_tree_count">
-        <item quantity="one">열린 채팅 %1$d개</item>
-        <item quantity="other">열린 채팅 %1$d개</item>
-    </plurals>
     <string name="home_view_scope">표시 대상</string>
     <string name="home_scope_mine">내 작업</string>
     <string name="home_scope_team">팀 작업</string>
@@ -410,6 +406,23 @@
     <string name="chat_diff_not_tracked">저장소 외부의 파일이어서 비교할 이전 버전이 없어요.</string>
     <string name="chat_diff_workspace_unavailable">워크스페이스 변경 사항을 불러올 수 없어요. 컴퓨터 연결 상태를 확인한 후 다시 시도하세요.</string>
     <string name="chat_diff_same">변경된 줄이 없어요.</string>
+    <string name="chat_diff_line_too_long">(줄이 너무 길어요. 줄 바꿈 모드로 전환해서 확인하세요.)</string>
+    <string name="chat_diff_line_truncated">(줄이 너무 길어 여기서 잘렸어요.)</string>
+    <string name="chat_diff_more">기타 변경 내역 작업</string>
+    <string name="chat_diff_unified">통합</string>
+    <string name="chat_diff_split">분할</string>
+    <string name="chat_diff_wrap">줄 바꿈</string>
+    <string name="chat_diff_no_wrap">줄 바꿈 안 함</string>
+    <string name="chat_diff_copy_file_name">파일 이름 복사</string>
+    <string name="chat_diff_copy_path">경로 복사</string>
+    <string name="chat_diff_copy_contents">전체 내용 복사</string>
+    <string name="chat_diff_copy_patch">패치 복사</string>
+    <string name="chat_diff_preview_file">파일 미리보기</string>
+    <string name="chat_diff_preview_back">변경 내역으로 돌아가기</string>
+    <string name="chat_diff_copied">복사했습니다</string>
+    <string name="chat_diff_copy_too_large">너무 커서 복사할 수 없어요</string>
+    <string name="chat_diff_base_turn">이 턴</string>
+    <string name="chat_diff_base_current">현재</string>
     <plurals name="chat_diff_unchanged">
         <item quantity="one">⋯ 변경 없는 %d줄</item>
         <item quantity="other">⋯ 변경 없는 %d줄</item>

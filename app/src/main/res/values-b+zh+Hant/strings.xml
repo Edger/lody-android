@@ -50,10 +50,6 @@
     <string name="home_tree_collapse">收合子對話</string>
     <string name="home_tree_expanded">已展開</string>
     <string name="home_tree_collapsed">已收合</string>
-    <plurals name="home_tree_count">
-        <item quantity="one">%1$d 個子對話</item>
-        <item quantity="other">%1$d 個子對話</item>
-    </plurals>
     <string name="home_view_scope">顯示範圍</string>
     <string name="home_scope_mine">我的任務</string>
     <string name="home_scope_team">團隊任務</string>
@@ -410,6 +406,23 @@
     <string name="chat_diff_not_tracked">此檔案不在儲存庫內，因此沒有舊版本可供比對。</string>
     <string name="chat_diff_workspace_unavailable">無法載入工作區變更，請檢查電腦連線後再試一次。</string>
     <string name="chat_diff_same">沒有逐行變更。</string>
+    <string name="chat_diff_line_too_long">（此行過長，請切換到自動換行模式查看）</string>
+    <string name="chat_diff_line_truncated">（此行過長，已在此截斷）</string>
+    <string name="chat_diff_more">更多 diff 操作</string>
+    <string name="chat_diff_unified">統一</string>
+    <string name="chat_diff_split">分欄</string>
+    <string name="chat_diff_wrap">自動換行</string>
+    <string name="chat_diff_no_wrap">不自動換行</string>
+    <string name="chat_diff_copy_file_name">拷貝檔案名稱</string>
+    <string name="chat_diff_copy_path">拷貝路徑</string>
+    <string name="chat_diff_copy_contents">拷貝全文</string>
+    <string name="chat_diff_copy_patch">拷貝補丁</string>
+    <string name="chat_diff_preview_file">預覽檔案</string>
+    <string name="chat_diff_preview_back">返回 diff</string>
+    <string name="chat_diff_copied">已複製</string>
+    <string name="chat_diff_copy_too_large">內容過大，無法複製</string>
+    <string name="chat_diff_base_turn">本輪</string>
+    <string name="chat_diff_base_current">目前</string>
     <plurals name="chat_diff_unchanged">
         <item quantity="one">⋯ %d 行未變更</item>
         <item quantity="other">⋯ %d 行未變更</item>

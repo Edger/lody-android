@@ -50,10 +50,6 @@
     <string name="home_tree_collapse">開いたチャットを非表示</string>
     <string name="home_tree_expanded">展開済み</string>
     <string name="home_tree_collapsed">折りたたみ済み</string>
-    <plurals name="home_tree_count">
-        <item quantity="one">開いたチャット %1$d件</item>
-        <item quantity="other">開いたチャット %1$d件</item>
-    </plurals>
     <string name="home_view_scope">表示対象</string>
     <string name="home_scope_mine">自分のタスク</string>
     <string name="home_scope_team">チームのタスク</string>
@@ -410,6 +406,23 @@
     <string name="chat_diff_not_tracked">このファイルはリポジトリ外にあるため、比較できる以前のバージョンがありません。</string>
     <string name="chat_diff_workspace_unavailable">ワークスペースの変更を読み込めませんでした。コンピューターとの接続を確認してもう一度お試しください。</string>
     <string name="chat_diff_same">行の変更はありません。</string>
+    <string name="chat_diff_line_too_long">（行が長すぎます。折り返し表示に切り替えて確認してください）</string>
+    <string name="chat_diff_line_truncated">（行が長すぎるため、ここで切り詰めています）</string>
+    <string name="chat_diff_more">その他の差分操作</string>
+    <string name="chat_diff_unified">統合</string>
+    <string name="chat_diff_split">分割</string>
+    <string name="chat_diff_wrap">折り返し表示</string>
+    <string name="chat_diff_no_wrap">折り返さない</string>
+    <string name="chat_diff_copy_file_name">ファイル名をコピー</string>
+    <string name="chat_diff_copy_path">パスをコピー</string>
+    <string name="chat_diff_copy_contents">内容をコピー</string>
+    <string name="chat_diff_copy_patch">パッチをコピー</string>
+    <string name="chat_diff_preview_file">ファイルをプレビュー</string>
+    <string name="chat_diff_preview_back">差分に戻る</string>
+    <string name="chat_diff_copied">コピーしました</string>
+    <string name="chat_diff_copy_too_large">大きすぎるためコピーできません</string>
+    <string name="chat_diff_base_turn">このターン</string>
+    <string name="chat_diff_base_current">現在</string>
     <plurals name="chat_diff_unchanged">
         <item quantity="one">⋯ 変更なしの %d 行</item>
         <item quantity="other">⋯ 変更なしの %d 行</item>
