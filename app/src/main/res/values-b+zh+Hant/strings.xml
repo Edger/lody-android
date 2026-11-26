@@ -103,6 +103,7 @@
     <string name="chat_image_next">下一張圖片</string>
     <string name="chat_image_previous">上一張圖片</string>
     <string name="chat_image_failed">無法載入圖片，輕觸即可重試。</string>
+    <string name="chat_image_retry">重新載入圖片</string>
     <string name="chat_image_close">關閉圖片</string>
     <string name="chat_mermaid_open">全螢幕檢視</string>
     <string name="chat_mermaid_close">關閉圖表</string>
@@ -111,6 +112,14 @@
     <string name="chat_image_save">儲存至相簿</string>
     <string name="chat_image_copied">已複製圖片</string>
     <string name="chat_image_saved">已儲存至 Pictures/Lody</string>
+    <string name="debug_images_title">圖片狀態</string>
+    <string name="debug_images_hint">使用假圖片來源的對話圖片開發預覽。輕觸已載入的圖片可開啟檢視器；輕觸載入失敗的圖片可重試。</string>
+    <string name="debug_images_compact">使用者附件縮圖</string>
+    <string name="debug_images_agent">Agent 圖片卡片</string>
+    <string name="debug_images_stack">圖片堆疊</string>
+    <string name="debug_images_loaded">已載入</string>
+    <string name="debug_images_loading">載入中</string>
+    <string name="debug_images_failed">失敗</string>
     <string name="chat_image_save_failed">無法儲存圖片</string>
     <string name="chat_image_unavailable">圖片暫時無法使用</string>
     <string name="create_title">新增工作階段</string>

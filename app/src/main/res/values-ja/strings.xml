@@ -103,6 +103,7 @@
     <string name="chat_image_next">次の画像</string>
     <string name="chat_image_previous">前の画像</string>
     <string name="chat_image_failed">画像を読み込めませんでした。タップして再試行してください。</string>
+    <string name="chat_image_retry">画像を再読み込み</string>
     <string name="chat_image_close">画像を閉じる</string>
     <string name="chat_mermaid_open">全画面で表示</string>
     <string name="chat_mermaid_close">図を閉じる</string>
@@ -111,6 +112,14 @@
     <string name="chat_image_save">ギャラリーに保存</string>
     <string name="chat_image_copied">画像をコピーしました</string>
     <string name="chat_image_saved">Pictures/Lody に保存しました</string>
+    <string name="debug_images_title">画像の状態</string>
+    <string name="debug_images_hint">ダミーの画像ソースを使った会話内の画像の開発者向けプレビューです。読み込み済みの画像をタップするとビューアが開き、失敗した画像をタップすると再試行します。</string>
+    <string name="debug_images_compact">ユーザー添付のタイル</string>
+    <string name="debug_images_agent">エージェント画像カード</string>
+    <string name="debug_images_stack">画像スタック</string>
+    <string name="debug_images_loaded">読み込み済み</string>
+    <string name="debug_images_loading">読み込み中</string>
+    <string name="debug_images_failed">失敗</string>
     <string name="chat_image_save_failed">画像を保存できませんでした</string>
     <string name="chat_image_unavailable">画像はまだ利用できません</string>
     <string name="create_title">新しいセッション</string>

@@ -119,6 +119,7 @@
     <string name="chat_image_next">Next image</string>
     <string name="chat_image_previous">Previous image</string>
     <string name="chat_image_failed">Couldn\'t load the image. Tap to retry.</string>
+    <string name="chat_image_retry">Retry loading the image</string>
     <string name="chat_image_close">Close image</string>
     <string name="chat_mermaid_open">View full screen</string>
     <string name="chat_mermaid_close">Close diagram</string>
@@ -127,6 +128,14 @@
     <string name="chat_image_save">Save to gallery</string>
     <string name="chat_image_copied">Image copied</string>
     <string name="chat_image_saved">Saved to Pictures/Lody</string>
+    <string name="debug_images_title">Image states</string>
+    <string name="debug_images_hint">Developer preview of the transcript pictures, backed by a fake image source. Tap a loaded picture to open the viewer; tap a failed picture to retry.</string>
+    <string name="debug_images_compact">User attachment tiles</string>
+    <string name="debug_images_agent">Agent image cards</string>
+    <string name="debug_images_stack">Image stack</string>
+    <string name="debug_images_loaded">Loaded</string>
+    <string name="debug_images_loading">Loading</string>
+    <string name="debug_images_failed">Failed</string>
     <string name="chat_image_save_failed">Couldn\'t save the image</string>
     <string name="chat_image_unavailable">The image isn\'t available yet</string>
 

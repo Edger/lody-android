@@ -439,8 +439,15 @@ sealed interface RoleSend {
     data object None : RoleSend
     data class Role(val id: String) : RoleSend
 }
-/** A turn's attachment; [file] is set for an uploaded file the reader can open. */
-data class MessageAttachment(val name: String, val image: Boolean, val file: app.lody.android.chat.SessionFileRef? = null)
+/**
+ * A turn's attachment; [turnImage] is the addressable picture and [file] an uploaded file the
+ * reader can open.
+ */
+data class MessageAttachment(
+    val name: String, val image: Boolean,
+    val turnImage: TurnImage? = null,
+    val file: app.lody.android.chat.SessionFileRef? = null,
+)
 /**
  * The latest user turn's run config (runtime session `composer`), what the next turn would use.
  * [roleKnown] is false when the turn says nothing about a Role; then [agentRoleId] null is

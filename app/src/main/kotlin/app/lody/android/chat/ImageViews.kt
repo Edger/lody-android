@@ -63,7 +63,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -144,6 +143,19 @@ private fun SingleImage(image: TurnImage, onOpen: () -> Unit) {
             .semantics { contentDescription = label })
     }
 }
+
+/** A user turn's uploaded picture, sized as iOS `ChatMessageAttachmentsCell`'s compact tile. */
+@Composable
+internal fun AttachmentImageTile(image: TurnImage, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val label = stringResource(R.string.chat_image_label, image.fileName)
+    ImageCard(image, load = true, ContentScale.Crop, modifier
+        .size(AttachmentTileWidth, AttachmentTileHeight)
+        .semantics { contentDescription = label }, compact = true, onOpen = onClick)
+}
+
+// iOS sizes tiles from the grid: 76 pt high, about 112 pt wide on a 360 dp screen.
+private val AttachmentTileWidth = 112.dp
+private val AttachmentTileHeight = 76.dp
 
 /** How many cards of a stack are drawn; the rest wait behind, loaded as they come up. */
 private const val VisibleDepth = 3
@@ -259,7 +271,10 @@ private fun ImageStack(images: List<TurnImage>, top: Int, onTop: (Int) -> Unit, 
 
 /** A rounded card that loads one thumbnail; a failed load offers a retry. */
 @Composable
-private fun ImageCard(image: TurnImage, load: Boolean, scale: ContentScale, modifier: Modifier) {
+private fun ImageCard(
+    image: TurnImage, load: Boolean, scale: ContentScale, modifier: Modifier,
+    compact: Boolean = false, onOpen: (() -> Unit)? = null,
+) {
     val source = LocalSessionImages.current
     val colors = LodyTheme.colors
     var bitmap by remember(image.id) { mutableStateOf(source?.cached(image, full = false)) }
@@ -270,18 +285,32 @@ private fun ImageCard(image: TurnImage, load: Boolean, scale: ContentScale, modi
         failed = false
         bitmap = try { source.bitmap(image, full = false) } catch (error: CancellationException) { throw error } catch (_: Exception) { failed = true; null }
     }
+    val retry = stringResource(R.string.chat_image_retry)
+    val open = stringResource(R.string.chat_image_open)
+    // A failed compact tile retries as a whole; it must not open a viewer that cannot load either.
+    val action = when {
+        failed && compact -> Modifier.clickable(enabled = source != null, onClickLabel = retry, role = Role.Button) { attempt += 1 }
+        onOpen != null -> Modifier.clickable(onClickLabel = open, role = Role.Image, onClick = onOpen)
+        else -> Modifier
+    }
     Box(
-        modifier.shadow(3.dp, CardShape, clip = false).clip(CardShape).background(colors.bgSunken).border(0.5.dp, colors.borderSubtle, CardShape),
+        modifier.clip(CardShape).background(colors.bgSunken).border(0.5.dp, colors.borderSubtle, CardShape).then(action),
         contentAlignment = Alignment.Center,
     ) {
         bitmap?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = scale) }
         if (bitmap == null && !failed && load) CircularProgressIndicator(Modifier.size(LodyIconSize.md), strokeWidth = 2.dp, color = colors.iconSecondary)
         if (failed) {
-            Text(
-                stringResource(R.string.chat_image_failed),
-                modifier = Modifier.padding(LodySpacing.sm).clickable(enabled = source != null) { attempt += 1 },
-                style = LodyTheme.typography.caption, color = colors.textSecondary, textAlign = TextAlign.Center,
-            )
+            // A compact tile has no room for a caption: a circled exclamation, tapped to retry.
+            if (compact) {
+                Icon(LodyIcons.Alert, contentDescription = null, modifier = Modifier.size(LodyIconSize.lg), tint = colors.dangerDefault)
+            } else {
+                Text(
+                    stringResource(R.string.chat_image_failed),
+                    modifier = Modifier.padding(LodySpacing.sm)
+                        .clickable(enabled = source != null, onClickLabel = retry) { attempt += 1 },
+                    style = LodyTheme.typography.caption, color = colors.textSecondary, textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }
@@ -295,7 +324,7 @@ private val ViewerCanvas = Color(0xFF111113)
  * offers Copy, Save and Share for the original image. [onDismiss] receives the last page.
  */
 @Composable
-private fun ImageViewer(images: List<TurnImage>, start: Int, onDismiss: (Int) -> Unit) {
+internal fun ImageViewer(images: List<TurnImage>, start: Int, onDismiss: (Int) -> Unit) {
     val pager = rememberPagerState(initialPage = start) { images.size }
     Dialog(
         onDismissRequest = { onDismiss(pager.currentPage) },

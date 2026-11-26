@@ -107,6 +107,7 @@
     <string name="chat_image_next">Следующее изображение</string>
     <string name="chat_image_previous">Предыдущее изображение</string>
     <string name="chat_image_failed">Не удалось загрузить изображение. Нажмите, чтобы повторить.</string>
+    <string name="chat_image_retry">Повторить загрузку изображения</string>
     <string name="chat_image_close">Закрыть изображение</string>
     <string name="chat_mermaid_open">На весь экран</string>
     <string name="chat_mermaid_close">Закрыть диаграмму</string>
@@ -115,6 +116,14 @@
     <string name="chat_image_save">Сохранить в галерею</string>
     <string name="chat_image_copied">Изображение скопировано</string>
     <string name="chat_image_saved">Сохранено в Pictures/Lody</string>
+    <string name="debug_images_title">Состояния изображений</string>
+    <string name="debug_images_hint">Предпросмотр изображений в переписке для разработчиков на поддельном источнике изображений. Нажмите на загруженное изображение, чтобы открыть просмотр; нажмите на изображение с ошибкой, чтобы повторить.</string>
+    <string name="debug_images_compact">Миниатюры вложений пользователя</string>
+    <string name="debug_images_agent">Карточки изображений агента</string>
+    <string name="debug_images_stack">Стопка изображений</string>
+    <string name="debug_images_loaded">Загружено</string>
+    <string name="debug_images_loading">Загрузка</string>
+    <string name="debug_images_failed">Ошибка</string>
     <string name="chat_image_save_failed">Не удалось сохранить изображение</string>
     <string name="chat_image_unavailable">Изображение пока недоступно</string>
     <string name="create_title">Новая сессия</string>
