@@ -1347,7 +1347,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     var scrollToLatest by remember { mutableIntStateOf(0) }
     val atLatest by remember { derivedStateOf { !listState.canScrollForward } }
     val headerHeight = LodySize.controlLg + LodySpacing.md
-    var mentionDockHeight by remember(id) { mutableStateOf(MentionPanelHeight) }
+    var columnHeightPx by remember { mutableIntStateOf(0) }
+    var chromeHeightPx by remember { mutableIntStateOf(0) }
     Scaffold(
         containerColor = colors.bgBase,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -1355,18 +1356,24 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     ) { padding ->
         val headerRoom = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + headerHeight
         val density = LocalDensity.current
+        // The composer never rises under the floating header: when the room above the composer and
+        // keyboard is smaller than the header, the @ panel gives up rows first, down to its
+        // minimum, since its lists scroll (iOS `ChatComposerView.fitPageRoom`). Computing this
+        // from the column and bottom chrome avoids feeding `MentionDock`'s own expand animation
+        // back through the transcript box's `onSizeChanged`.
+        val mentionDockHeight = remember(headerRoom, density) {
+            derivedStateOf {
+                with(density) {
+                    fitMentionDockHeight(columnHeightPx.toDp(), headerRoom, chromeHeightPx.toDp())
+                }
+            }
+        }
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
             .imePadding().windowInsetsPadding(
                 WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Bottom),
-            )) {
-            // The composer never rises under the floating header: when the transcript's room is
-            // smaller than the header, the @ panel gives up rows first, down to its minimum, since
-            // its lists scroll (iOS `ChatComposerView.fitPageRoom`).
-            Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { size ->
-                val room = with(density) { size.height.toDp() } - headerRoom
-                mentionDockHeight = (mentionDockHeight + room).coerceIn(MentionPanelMinimumHeight, MentionPanelHeight)
-            }) {
+            ).onSizeChanged { columnHeightPx = it.height }) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 val top = headerRoom
                 if (context.session?.isTabClosed == true || all.isEmpty()) {
                     Box(Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
@@ -1498,88 +1505,90 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                     },
                 )
             } else {
-                if (bar != null && context.session?.isTabClosed != true) {
-                    ChatActionBar(
-                        bar,
-                        writing = writing,
-                        // `writing` changes with every begin/finish, so this read recomposes with it.
-                        pullRequestBusy = writing != null && bar.pullRequest?.let(prUpdates::writes) == true,
-                        pullRequestPanel = pullRequestPanel,
-                        panelFor = panelFor,
-                        onOpenWorkspaceChanges = { workspaceChangesScope = it },
-                        // The menu shows the uncommitted list's own ± instead of the branch totals.
-                        loadUncommittedTotals = {
-                            when (val changes = repository.workspaceChanges(scope, id, DiffScope.Uncommitted)) {
-                                is WorkspaceChanges.Ready -> {
-                                    uncommittedChanges = changes
-                                    uncommittedLoadedAt = System.currentTimeMillis()
-                                    uncommittedSummary(changes.files)
+                Column(Modifier.fillMaxWidth().onSizeChanged { chromeHeightPx = it.height }) {
+                    if (bar != null && context.session?.isTabClosed != true) {
+                        ChatActionBar(
+                            bar,
+                            writing = writing,
+                            // `writing` changes with every begin/finish, so this read recomposes with it.
+                            pullRequestBusy = writing != null && bar.pullRequest?.let(prUpdates::writes) == true,
+                            pullRequestPanel = pullRequestPanel,
+                            panelFor = panelFor,
+                            onOpenWorkspaceChanges = { workspaceChangesScope = it },
+                            // The menu shows the uncommitted list's own ± instead of the branch totals.
+                            loadUncommittedTotals = {
+                                when (val changes = repository.workspaceChanges(scope, id, DiffScope.Uncommitted)) {
+                                    is WorkspaceChanges.Ready -> {
+                                        uncommittedChanges = changes
+                                        uncommittedLoadedAt = System.currentTimeMillis()
+                                        uncommittedSummary(changes.files)
+                                    }
+                                    is WorkspaceChanges.Unavailable -> null
                                 }
-                                is WorkspaceChanges.Unavailable -> null
-                            }
+                            },
+                            relations = if (hasRelations) ({ SessionRelationsChip(id, context.relatedSessions, onSelectTab) }) else null,
+                            devices = if (devicePlatforms.isNotEmpty()) ({
+                                devicePlatforms.forEach { platform ->
+                                    DevicePreviewChip(platform, if (platform == DevicePlatform.IOS) iosPreview else androidPreview) { openDevice(platform) }
+                                }
+                            }) else null,
+                            onAction = { action ->
+                                // Only while still offered, so a menu left open cannot act for a state that moved on.
+                                when {
+                                    writing != null || action !in bar.actions -> Unit
+                                    action == SessionInfoBar.Action.Merge -> mergeTarget = bar.pullRequest
+                                    action == SessionInfoBar.Action.ReadyForReview -> bar.pullRequest?.let { writePullRequest(it, null) }
+                                    else -> sendText(bar.prompt(action, prompts), emptyList(), emptyList())
+                                }
+                            },
+                            onCopied = { coroutines.launch { snackbar.showSnackbar(it) } },
+                        )
+                    }
+                    val modelName = capability?.models?.firstOrNull { it.id == modelId }?.name ?: session?.modelName ?: agentName
+                    if (quotaNotice != null && context.session?.isTabClosed != true) Text(
+                        quotaNotice,
+                        style = LodyTheme.typography.footnote,
+                        color = LodyTheme.colors.textSecondary,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = LodySpacing.lg, vertical = LodySpacing.xs).testTag("session-free-turn-notice"),
+                    )
+                    if (context.session?.isTabClosed != true) ChatComposer(
+                        field,
+                        usage = if (chosen && modelId != usage?.modelId) usage?.copy(quota = null) else usage,
+                        onPromptChange = { if (it.text.length <= 32000) { field = app.lody.android.chat.MentionPresentation.edit(field, it); prompt = field.text } },
+                        onFocusChange = { composerFocused = it },
+                        focusRequester = composerFocusRequester,
+                        referencePresentation = mentions.presentation(LodyTheme.colors.accentOnSubtle, LodyTheme.colors.accentSubtle),
+                        enabled = canEdit,
+                        sending = outboxSending,
+                        quotaLocked = quotaLocked,
+                        agentCliType = session?.cliType,
+                        agentType = session?.agentType,
+                        roleEmoji = activeRole?.role?.emoji,
+                        roleName = activeRole?.role?.name,
+                        agentName = options?.agents?.firstOrNull { it.id == session?.agentConfigId }?.name ?: agentName.takeIf { it.isNotBlank() },
+                        face = listOfNotNull(modelName, effort),
+                        mode = modeId,
+                        modeLabel = capability?.modes?.firstOrNull { it.id == modeId }?.name,
+                        plan = capability?.planOn(optionValues) == true,
+                        fast = capability?.fastOn(optionValues, modelId) == true,
+                        onRunConfig = if (session != null) ({ runConfig = true }) else null,
+                        stoppable = runningTurn != null && controlReady,
+                        stopping = stopping,
+                        attachments = attachments,
+                        onPickPhotos = {
+                            photoPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                         },
-                        relations = if (hasRelations) ({ SessionRelationsChip(id, context.relatedSessions, onSelectTab) }) else null,
-                        devices = if (devicePlatforms.isNotEmpty()) ({
-                            devicePlatforms.forEach { platform ->
-                                DevicePreviewChip(platform, if (platform == DevicePlatform.IOS) iosPreview else androidPreview) { openDevice(platform) }
-                            }
-                        }) else null,
-                        onAction = { action ->
-                            // Only while still offered, so a menu left open cannot act for a state that moved on.
-                            when {
-                                writing != null || action !in bar.actions -> Unit
-                                action == SessionInfoBar.Action.Merge -> mergeTarget = bar.pullRequest
-                                action == SessionInfoBar.Action.ReadyForReview -> bar.pullRequest?.let { writePullRequest(it, null) }
-                                else -> sendText(bar.prompt(action, prompts), emptyList(), emptyList())
-                            }
-                        },
-                        onCopied = { coroutines.launch { snackbar.showSnackbar(it) } },
+                        onPickFiles = { filePicker.launch(arrayOf("*/*")) },
+                        onRemoveAttachment = { removed -> attachments = attachments.filterNot { it.id == removed } },
+                        quotes = quotes,
+                        onOpenQuote = { card -> quoteEditor = QuoteEditing(card.id, card.snapshot, card.comment) },
+                        onRemoveQuote = { removed -> quotes = quotes.filterNot { it.id == removed } },
+                        onSend = send,
+                        onStop = stop,
                     )
                 }
-                val modelName = capability?.models?.firstOrNull { it.id == modelId }?.name ?: session?.modelName ?: agentName
-                if (quotaNotice != null && context.session?.isTabClosed != true) Text(
-                    quotaNotice,
-                    style = LodyTheme.typography.footnote,
-                    color = LodyTheme.colors.textSecondary,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = LodySpacing.lg, vertical = LodySpacing.xs).testTag("session-free-turn-notice"),
-                )
-                if (context.session?.isTabClosed != true) ChatComposer(
-                    field,
-                    usage = if (chosen && modelId != usage?.modelId) usage?.copy(quota = null) else usage,
-                    onPromptChange = { if (it.text.length <= 32000) { field = app.lody.android.chat.MentionPresentation.edit(field, it); prompt = field.text } },
-                    onFocusChange = { composerFocused = it },
-                    focusRequester = composerFocusRequester,
-                    referencePresentation = mentions.presentation(LodyTheme.colors.accentOnSubtle, LodyTheme.colors.accentSubtle),
-                    enabled = canEdit,
-                    sending = outboxSending,
-                    quotaLocked = quotaLocked,
-                    agentCliType = session?.cliType,
-                    agentType = session?.agentType,
-                    roleEmoji = activeRole?.role?.emoji,
-                    roleName = activeRole?.role?.name,
-                    agentName = options?.agents?.firstOrNull { it.id == session?.agentConfigId }?.name ?: agentName.takeIf { it.isNotBlank() },
-                    face = listOfNotNull(modelName, effort),
-                    mode = modeId,
-                    modeLabel = capability?.modes?.firstOrNull { it.id == modeId }?.name,
-                    plan = capability?.planOn(optionValues) == true,
-                    fast = capability?.fastOn(optionValues, modelId) == true,
-                    onRunConfig = if (session != null) ({ runConfig = true }) else null,
-                    stoppable = runningTurn != null && controlReady,
-                    stopping = stopping,
-                    attachments = attachments,
-                    onPickPhotos = {
-                        photoPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                    },
-                    onPickFiles = { filePicker.launch(arrayOf("*/*")) },
-                    onRemoveAttachment = { removed -> attachments = attachments.filterNot { it.id == removed } },
-                    quotes = quotes,
-                    onOpenQuote = { card -> quoteEditor = QuoteEditing(card.id, card.snapshot, card.comment) },
-                    onRemoveQuote = { removed -> quotes = quotes.filterNot { it.id == removed } },
-                    onSend = send,
-                    onStop = stop,
-                )
                 // Docked between the prompt and the keyboard; rows never take focus, so the keyboard stays.
-                MentionDock(mentions, field, active = composerFocused && canSend, loadShortcut = { shortcutId -> repository.shortcut(scope, shortcutId) }, height = mentionDockHeight) { next -> field = next; prompt = next.text }
+                MentionDock(mentions, field, active = composerFocused && canSend, loadShortcut = { shortcutId -> repository.shortcut(scope, shortcutId) }, height = { mentionDockHeight.value }) { next -> field = next; prompt = next.text }
             }
         }
     }
