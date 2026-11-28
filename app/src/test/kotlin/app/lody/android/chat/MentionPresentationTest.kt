@@ -2,6 +2,7 @@ package app.lody.android.chat
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.dp
 import app.lody.android.runtime.MentionCandidate
 import org.junit.Assert.*
 import org.junit.Test
@@ -71,5 +72,17 @@ class MentionPresentationTest {
             assertEquals(Mentions.Trigger(4, text.length, "auth", "skill"), trigger)
         }
         assertNull(Mentions.trigger(androidx.compose.ui.text.input.TextFieldValue("price¥5", androidx.compose.ui.text.TextRange(7))))
+    }
+
+    @Test fun mentionDockHeightFitsRoomWithoutFeedback() {
+        // Unmeasured container defaults to the full panel height.
+        assertEquals(MentionPanelHeight, fitMentionDockHeight(0.dp, headerRoom = 100.dp, chromeHeight = 160.dp))
+        // Plenty of room caps at MentionPanelHeight.
+        assertEquals(MentionPanelHeight, fitMentionDockHeight(700.dp, headerRoom = 100.dp, chromeHeight = 160.dp))
+        // Phone with IME open: yields exact room below the header without overshooting.
+        assertEquals(220.dp, fitMentionDockHeight(480.dp, headerRoom = 100.dp, chromeHeight = 160.dp))
+        // Very tight room clamps at MentionPanelMinimumHeight instead of collapsing further.
+        assertEquals(MentionPanelMinimumHeight, fitMentionDockHeight(320.dp, headerRoom = 100.dp, chromeHeight = 160.dp))
+        assertEquals(MentionPanelMinimumHeight, fitMentionDockHeight(200.dp, headerRoom = 100.dp, chromeHeight = 160.dp))
     }
 }
