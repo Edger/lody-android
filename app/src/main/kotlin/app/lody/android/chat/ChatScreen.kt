@@ -43,6 +43,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.unit.Constraints
@@ -103,16 +105,17 @@ data class ChatContext(
     val readOnly: Boolean = false,
 )
 
-/** The More menu's preview entries; null labels hide an entry. */
+/** The More menu's Remote preview submenu model. */
 internal data class PreviewMenu(
     val browserLabel: String? = null,
-    val browserActive: Boolean = false,
     val browserBusy: Boolean = false,
-    val browserCanStopProcess: Boolean = false,
+    val iosDimmed: Boolean = false,
     val onBrowser: () -> Unit = {},
-    val onCopyBrowser: () -> Unit = {},
-    val onStopBrowser: (Boolean) -> Unit = {},
+    val onIosSimulator: () -> Unit = {},
+    val onAndroidEmulator: () -> Unit = {},
 )
+
+private data class BrowserEmptyDialogState(val stoppedLabel: String? = null)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -269,12 +272,14 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
             }
         } finally { repair.close() }
     }
-    // A sent turn leaves the optimistic list once the transcript carries its id.
+    // A sent turn leaves the optimistic list once the transcript carries its id; unconfirmed
+    // (`unknown`/`uploaded`) records stay actionable until settled or taken over by Roost.
     val authorsByMessage = remember(messages) { messages.associate { it.id to it.userId } }
+    val settledMessages = remember(messages) { settledTurnIds(messages) }
     val outboxState by application.sessionOutbox.state.collectAsState()
     val outboxRecord = outboxState[application.sessionOutbox.key(scope, id)]
-    LaunchedEffect(scope, id, authorsByMessage) {
-        if (authorsByMessage.isNotEmpty()) application.sessionOutbox.acknowledge(scope, id, authorsByMessage.keys)
+    LaunchedEffect(scope, id, authorsByMessage, settledMessages) {
+        if (authorsByMessage.isNotEmpty()) application.sessionOutbox.acknowledge(scope, id, authorsByMessage.keys, settledMessages)
     }
     val firstTurn = creation?.takeUnless { it.request.turnId in forgotten }?.let {
         Outgoing(it.request.turnId, it.request.text, it.at, when (it.state) {
@@ -293,11 +298,13 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         (listOfNotNull(firstTurn, outboxTurn) + outgoing.filter { o -> o.turnId != outboxTurn?.turnId }).filter { it.turnId !in authorsByMessage }
     }
     // Composer focus / IME animation must not rebuild every sender row in a long chat.
-    val all = remember(entries, authorsByMessage, members, context.me, memberLabel, pending, mentions.catalogs, forgotten) {
+    val unconfirmedOutboxId = outboxRecord?.takeIf { it.phase in setOf("unknown", "uploaded") && it.turnId !in forgotten }?.turnId
+    val all = remember(entries, authorsByMessage, members, context.me, memberLabel, pending, mentions.catalogs, forgotten, unconfirmedOutboxId) {
         entries.filterNot { it is ChatEntry.User && it.delivery == Delivery.Unknown && it.id in forgotten }.map { entry ->
             if (entry is ChatEntry.User) {
                 val userId = authorsByMessage[entry.id]
-                entry.copy(who = senderIdentity(userId, context.me, members[userId ?: context.me?.id], memberLabel, entry.who.time))
+                val delivery = if (entry.id == unconfirmedOutboxId && entry.delivery == Delivery.Sent) Delivery.Unknown else entry.delivery
+                entry.copy(who = senderIdentity(userId, context.me, members[userId ?: context.me?.id], memberLabel, entry.who.time), delivery = delivery)
             } else entry
         } + pending.map {
             // The composer's own labels and chips (the new chat's first turn carries them, as this
@@ -415,11 +422,22 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     // agent config; the agent itself never changes here. The picked Role (or explicit None)
     // holds until a newer turn lands with its own Role.
     var roles by remember(scope) { mutableStateOf<List<AgentRole>?>(null) }
-    LaunchedEffect(scope, status == "live" || isDraftTab) {
-        if ((status != "live" && !isDraftTab) || roles != null) return@LaunchedEffect
-        try { roles = repository.roles(scope) }
+    LaunchedEffect(scope) {
+        try { application.creation.cachedRoles(scope)?.let { if (roles == null) roles = it } }
         catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { /* No Role row until the list loads; turns inherit meanwhile. */ }
+        catch (_: Exception) { }
+        if (roles == null) {
+            try { roles = repository.roles(scope) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* No Role row until the list loads; turns inherit meanwhile. */ }
+        }
+        try {
+            repository.observeRoles(scope).collect { loaded ->
+                if (loaded != null) roles = loaded
+            }
+        }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { }
     }
     val durableRole = SessionRoles.durable(snapshotChoice)
     var pickedRole by remember(id) { mutableStateOf<SessionRoles.Pick?>(null) }
@@ -466,9 +484,10 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         StatusMenu(settle = !settled, focus = settled || later, { statusActions!!.later(target) }, { statusActions!!.settle(target) }, { statusActions!!.focus(target) })
     }
     val forgetFailure = stringResource(R.string.chat_forget_failed)
+    val recoverFailure = stringResource(R.string.chat_recover_failed)
     val retryablePendingIds = remember(messages, outboxRecord) {
         messages.filter { it.inputRetryable }.map { it.id }.toSet() +
-            setOfNotNull(outboxRecord?.takeIf { it.phase == "failed" }?.turnId)
+            setOfNotNull(outboxRecord?.takeIf { it.phase in setOf("failed", "unknown", "uploaded") }?.turnId)
     }
     forgetId?.let { inputId ->
         AlertDialog(onDismissRequest = { forgetId = null },
@@ -478,6 +497,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 forgetId = null
                 coroutines.launch {
                     if (outboxRecord?.turnId == inputId) {
+                        runCatching { repository.forgetPendingInput(scope, id, inputId) }
                         application.sessionOutbox.forget(scope, id, inputId)
                         outgoing = outgoing.filterNot { it.turnId == inputId }
                         forgotten = forgotten + inputId
@@ -878,8 +898,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     }
     val pullRequestPanel = bar?.pullRequest?.let(panelFor)
     // Transcript links to a file on the session's computer open its preview (Markdown and HTML
-    // for now, iOS `openMessageLink`); links to a PR of this project (a multi-repository project's
-    // members included) open the PR panel; other links go to the browser. iOS `openPullRequestLink`.
+    // for now, iOS `openMessageLink`); any valid GitHub PR link opens the PR panel; other links go
+    // to the browser. iOS `openPullRequestLink`.
     val browser = androidx.compose.ui.platform.LocalUriHandler.current
     val repositories = context.repositories
     var previewFile by remember(id) { mutableStateOf<String?>(null) }
@@ -888,7 +908,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         object : androidx.compose.ui.platform.UriHandler {
             override fun openUri(uri: String) {
                 val file = ChatFileLink.parse(uri)
-                val link = if (file == null) PullRequestLink.inProject(uri, repositories) else null
+                val link = if (file == null) PullRequestLink.resolve(uri, repositories) else null
                 when {
                     file != null && file.isPreviewable -> previewFile = file.path
                     file != null -> coroutines.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(markdownOnly) }
@@ -957,10 +977,13 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     val androidPreview = androidEntry.session
     var devicePage by remember(scope, id) { mutableStateOf<DevicePlatform?>(null) }
     var simulatorUpgrade by remember(scope, id) { mutableStateOf(false) }
+    var emulatorUpgrade by remember(scope, id) { mutableStateOf(false) }
+    var browserEmptyDialog by remember(scope, id) { mutableStateOf<BrowserEmptyDialogState?>(null) }
     var browserOpen by remember(scope, id) { mutableStateOf(false) }
     var browserEntry by remember(scope, id) { mutableStateOf(application.previewCache.browser(scope, id)) }
     var browserBusy by remember(scope, id) { mutableStateOf(false) }
     var browserCheckJob by remember(scope, id) { mutableStateOf<Job?>(null) }
+    val composerFocusRequester = remember(id) { androidx.compose.ui.focus.FocusRequester() }
     DisposableEffect(scope, id) { onDispose { browserCheckJob?.cancel() } }
     val openDevice: (DevicePlatform) -> Unit = { platform ->
         if (platform == DevicePlatform.IOS && context.machineSimulator == "upgrade-required") { simulatorUpgrade = true }
@@ -970,6 +993,10 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         stringResource(R.string.preview_unsupported), stringResource(R.string.preview_unauthorized), stringResource(R.string.preview_generic),
         stringResource(R.string.preview_stopped), stringResource(R.string.preview_stopped_with_process), stringResource(R.string.preview_stop_failed), stringResource(R.string.preview_failed),
     )
+    val previewIosRequiresMacOs = stringResource(R.string.preview_ios_requires_macos)
+    val previewOwnerOnly = stringResource(R.string.preview_owner_only)
+    val previewMachineOffline = stringResource(R.string.preview_machine_offline)
+    val previewBrowserPrompt = stringResource(R.string.preview_browser_prompt)
     val supportsPreviewStopProcess = (context.machineCapabilities["previewStopProcess"] ?: 0) >= 1
     val supportsIosShutdown = (context.machineCapabilities["iosSimulatorShutdown"] ?: 0) >= 1
     val supportsAndroidShutdown = (context.machineCapabilities["androidEmulatorShutdown"] ?: 0) >= 1
@@ -1018,6 +1045,10 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
             val message = try {
                 val reply = repository.browserPreview(scope, id, BrowserPreviewAction.CREATE)
                 when {
+                    RemotePreviewPolicy.isBrowserServerStoppedError(reply.error) -> {
+                        browserEmptyDialog = BrowserEmptyDialogState(stoppedLabel = browserCandidate?.label)
+                        null
+                    }
                     reply.error != null -> previewTexts.error(reply.error, reply.message)
                     PreviewUrls.origin(reply.url) == null -> previewTexts.generic
                     else -> {
@@ -1128,14 +1159,42 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
             if (message != null) snackbar.showSnackbar(message)
         }
     }
+    val handleRemotePreview: (RemotePreviewTarget) -> Unit = { target ->
+        val cachedBrowser = application.previewCache.browser(scope, id) != null
+        val decision = RemotePreviewPolicy.evaluate(
+            target = target,
+            sessionUserId = session?.userId,
+            currentUserId = scope.accountId,
+            machineSimulator = context.machineSimulator,
+            machineEmulator = context.machineEmulator,
+            machineCapabilities = context.machineCapabilities,
+            machineOnline = machineOnline,
+            hasBrowserCandidate = browserCandidate != null || cachedBrowser,
+            hasCachedBrowser = cachedBrowser,
+            iosRunning = iosPreview.running,
+            androidRunning = androidPreview.running,
+        )
+        when (decision) {
+            RemotePreviewDecision.OpenBrowser -> openBrowserPreview()
+            RemotePreviewDecision.BrowserEmpty -> browserEmptyDialog = BrowserEmptyDialogState(stoppedLabel = null)
+            is RemotePreviewDecision.OpenDevice -> openDevice(decision.platform)
+            RemotePreviewDecision.RequiresMacOS -> coroutines.launch { snackbar.showSnackbar(previewIosRequiresMacOs) }
+            RemotePreviewDecision.OwnerOnly -> coroutines.launch { snackbar.showSnackbar(previewOwnerOnly) }
+            RemotePreviewDecision.MachineOffline -> coroutines.launch { snackbar.showSnackbar(previewMachineOffline) }
+            is RemotePreviewDecision.UpgradeRequired -> when (decision.target) {
+                RemotePreviewTarget.BROWSER -> coroutines.launch { snackbar.showSnackbar(previewTexts.unsupported) }
+                RemotePreviewTarget.IOS_SIMULATOR -> simulatorUpgrade = true
+                RemotePreviewTarget.ANDROID_EMULATOR -> emulatorUpgrade = true
+            }
+        }
+    }
     val previewMenu = PreviewMenu(
-        browserLabel = browserCandidate?.let { stringResource(R.string.preview_open_label, it.label) },
-        browserActive = browserCandidate?.active == true || browserEntry != null,
+        browserLabel = browserCandidate?.label,
         browserBusy = browserBusy,
-        browserCanStopProcess = supportsPreviewStopProcess,
-        onBrowser = openBrowserPreview,
-        onCopyBrowser = copyBrowserLink,
-        onStopBrowser = stopBrowserPreview,
+        iosDimmed = RemotePreviewPolicy.isIosSimulatorDimmed(context.machineSimulator),
+        onBrowser = { handleRemotePreview(RemotePreviewTarget.BROWSER) },
+        onIosSimulator = { handleRemotePreview(RemotePreviewTarget.IOS_SIMULATOR) },
+        onAndroidEmulator = { handleRemotePreview(RemotePreviewTarget.ANDROID_EMULATOR) },
     )
     // Device capsules in the action bar: shown once the agent started a preview (catalog request id)
     // or one is running. The CLI records an agent start on the conversation that owns the device,
@@ -1163,6 +1222,39 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
         text = { Text(stringResource(R.string.preview_ios_upgrade, context.machineName)) },
         confirmButton = { TextButton(onClick = { simulatorUpgrade = false }) { Text(stringResource(R.string.preview_ok)) } },
     )
+    if (emulatorUpgrade) AlertDialog(
+        onDismissRequest = { emulatorUpgrade = false },
+        text = { Text(stringResource(R.string.preview_android_upgrade, context.machineName)) },
+        confirmButton = { TextButton(onClick = { emulatorUpgrade = false }) { Text(stringResource(R.string.preview_ok)) } },
+    )
+    browserEmptyDialog?.let { state ->
+        AlertDialog(
+            onDismissRequest = { browserEmptyDialog = null },
+            title = { Text(stringResource(R.string.preview_browser_empty_title)) },
+            text = {
+                Text(
+                    if (!state.stoppedLabel.isNullOrBlank()) {
+                        stringResource(R.string.preview_browser_stopped_message, state.stoppedLabel)
+                    } else {
+                        stringResource(R.string.preview_browser_empty_message)
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = canEdit,
+                    onClick = {
+                        browserEmptyDialog = null
+                        prompt = RemotePreviewPolicy.appendDraftPrompt(prompt, previewBrowserPrompt)
+                        runCatching { composerFocusRequester.requestFocus() }
+                    },
+                ) { Text(stringResource(R.string.preview_browser_empty_insert)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { browserEmptyDialog = null }) { Text(stringResource(R.string.preview_cancel)) }
+            },
+        )
+    }
     devicePage?.let { platform ->
         val entry = if (platform == DevicePlatform.IOS) iosEntry else androidEntry
         val canShutdown = if (platform == DevicePlatform.ANDROID) supportsAndroidShutdown else supportsIosShutdown
@@ -1255,7 +1347,8 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     var scrollToLatest by remember { mutableIntStateOf(0) }
     val atLatest by remember { derivedStateOf { !listState.canScrollForward } }
     val headerHeight = LodySize.controlLg + LodySpacing.md
-    var mentionDockHeight by remember(id) { mutableStateOf(MentionPanelHeight) }
+    var columnHeightPx by remember { mutableIntStateOf(0) }
+    var chromeHeightPx by remember { mutableIntStateOf(0) }
     Scaffold(
         containerColor = colors.bgBase,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -1263,18 +1356,24 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
     ) { padding ->
         val headerRoom = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + headerHeight
         val density = LocalDensity.current
+        // The composer never rises under the floating header: when the room above the composer and
+        // keyboard is smaller than the header, the @ panel gives up rows first, down to its
+        // minimum, since its lists scroll (iOS `ChatComposerView.fitPageRoom`). Computing this
+        // from the column and bottom chrome avoids feeding `MentionDock`'s own expand animation
+        // back through the transcript box's `onSizeChanged`.
+        val mentionDockHeight = remember(headerRoom, density) {
+            derivedStateOf {
+                with(density) {
+                    fitMentionDockHeight(columnHeightPx.toDp(), headerRoom, chromeHeightPx.toDp())
+                }
+            }
+        }
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
             .imePadding().windowInsetsPadding(
                 WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Bottom),
-            )) {
-            // The composer never rises under the floating header: when the transcript's room is
-            // smaller than the header, the @ panel gives up rows first, down to its minimum, since
-            // its lists scroll (iOS `ChatComposerView.fitPageRoom`).
-            Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { size ->
-                val room = with(density) { size.height.toDp() } - headerRoom
-                mentionDockHeight = (mentionDockHeight + room).coerceIn(MentionPanelMinimumHeight, MentionPanelHeight)
-            }) {
+            ).onSizeChanged { columnHeightPx = it.height }) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 val top = headerRoom
                 if (context.session?.isTabClosed == true || all.isEmpty()) {
                     Box(Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
@@ -1302,9 +1401,15 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                             if (outboxRecord?.turnId == inputId && outboxRecord.phase == "failed") {
                                 application.sessionOutbox.retry(scope, id, inputId)
                             } else coroutines.launch {
-                                try { repository.retryPendingInput(scope, id, inputId) }
+                                try {
+                                    val outcome = repository.retryPendingInput(scope, id, inputId)
+                                    val reconciled = application.sessionOutbox.reconcile(scope, id, inputId, outcome)
+                                    if (reconciled && (outcome == "not_saved" || outcome == "terminal")) {
+                                        snackbar.showSnackbar(failedText)
+                                    }
+                                }
                                 catch (cancelled: CancellationException) { throw cancelled }
-                                catch (_: Exception) { snackbar.showSnackbar(failedText) }
+                                catch (_: Exception) { snackbar.showSnackbar(recoverFailure) }
                             }
                         }),
                         actions = if (selectingForShare) MessageActionState() else messageActions,
@@ -1327,7 +1432,7 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                 }
                 ChatHeader(context.title, context.tabs, context.closedTabs, id, false, changingTab, onBack, onSelectTab, createTab, changeTab, context.machineName, machineOnline, loadMachine,
                     onBrowseFiles = if (!isDraftTab && ProjectFiles.browsable(context.session, creationUnconfirmed)) ({ browsingFiles = true }) else null,
-                    previews = previewMenu.takeIf { !isDraftTab && context.session?.isTabClosed != true && !creationUnconfirmed },
+                    previews = previewMenu.takeIf { !isDraftTab && context.session?.archived != true && context.session?.isTabClosed != true && !creationUnconfirmed && isPlaintextWorkspace },
                     status = statusMenu.takeUnless { isDraftTab },
                     onShareImage = if (!isDraftTab && context.session?.isTabClosed != true && !creationUnconfirmed && isPlaintextWorkspace && !selectingForShare) startShareImage else null,
                     shareBusy = shareLoading)
@@ -1336,16 +1441,17 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = top).padding(horizontal = TranscriptMargin),
                         style = LodyTheme.typography.footnote, color = colors.textSecondary)
                 }
+                val closedOrDraft = context.session?.isTabClosed == true || creationUnconfirmed || isDraftTab
+                val historyLabel = if (closedOrDraft) null else historySync?.let { historySyncLabel(it) }
                 val connectionSlot = when {
-                    context.session?.isTabClosed == true || creationUnconfirmed || isDraftTab -> null
+                    closedOrDraft -> null
                     status == "offline" -> "paused"
                     status != "live" && connectingShown -> "connecting"
-                    historySync != null -> "history"
+                    historyLabel != null -> "history"
                     else -> null
                 }
                 if (connectionSlot != null) {
                     val paused = connectionSlot == "paused"
-                    val historyLabel = historySync?.let { historySyncLabel(it) }
                     val connectionLabel = when (connectionSlot) {
                         "paused" -> stringResource(R.string.chat_connection_paused)
                         "connecting" -> stringResource(R.string.chat_connection_connecting)
@@ -1399,87 +1505,90 @@ fun ChatScreen(repository: ChatRepository, scope: RuntimeScope, id: String, cont
                     },
                 )
             } else {
-                if (bar != null && context.session?.isTabClosed != true) {
-                    ChatActionBar(
-                        bar,
-                        writing = writing,
-                        // `writing` changes with every begin/finish, so this read recomposes with it.
-                        pullRequestBusy = writing != null && bar.pullRequest?.let(prUpdates::writes) == true,
-                        pullRequestPanel = pullRequestPanel,
-                        panelFor = panelFor,
-                        onOpenWorkspaceChanges = { workspaceChangesScope = it },
-                        // The menu shows the uncommitted list's own ± instead of the branch totals.
-                        loadUncommittedTotals = {
-                            when (val changes = repository.workspaceChanges(scope, id, DiffScope.Uncommitted)) {
-                                is WorkspaceChanges.Ready -> {
-                                    uncommittedChanges = changes
-                                    uncommittedLoadedAt = System.currentTimeMillis()
-                                    uncommittedSummary(changes.files)
+                Column(Modifier.fillMaxWidth().onSizeChanged { chromeHeightPx = it.height }) {
+                    if (bar != null && context.session?.isTabClosed != true) {
+                        ChatActionBar(
+                            bar,
+                            writing = writing,
+                            // `writing` changes with every begin/finish, so this read recomposes with it.
+                            pullRequestBusy = writing != null && bar.pullRequest?.let(prUpdates::writes) == true,
+                            pullRequestPanel = pullRequestPanel,
+                            panelFor = panelFor,
+                            onOpenWorkspaceChanges = { workspaceChangesScope = it },
+                            // The menu shows the uncommitted list's own ± instead of the branch totals.
+                            loadUncommittedTotals = {
+                                when (val changes = repository.workspaceChanges(scope, id, DiffScope.Uncommitted)) {
+                                    is WorkspaceChanges.Ready -> {
+                                        uncommittedChanges = changes
+                                        uncommittedLoadedAt = System.currentTimeMillis()
+                                        uncommittedSummary(changes.files)
+                                    }
+                                    is WorkspaceChanges.Unavailable -> null
                                 }
-                                is WorkspaceChanges.Unavailable -> null
-                            }
+                            },
+                            relations = if (hasRelations) ({ SessionRelationsChip(id, context.relatedSessions, onSelectTab) }) else null,
+                            devices = if (devicePlatforms.isNotEmpty()) ({
+                                devicePlatforms.forEach { platform ->
+                                    DevicePreviewChip(platform, if (platform == DevicePlatform.IOS) iosPreview else androidPreview) { openDevice(platform) }
+                                }
+                            }) else null,
+                            onAction = { action ->
+                                // Only while still offered, so a menu left open cannot act for a state that moved on.
+                                when {
+                                    writing != null || action !in bar.actions -> Unit
+                                    action == SessionInfoBar.Action.Merge -> mergeTarget = bar.pullRequest
+                                    action == SessionInfoBar.Action.ReadyForReview -> bar.pullRequest?.let { writePullRequest(it, null) }
+                                    else -> sendText(bar.prompt(action, prompts), emptyList(), emptyList())
+                                }
+                            },
+                            onCopied = { coroutines.launch { snackbar.showSnackbar(it) } },
+                        )
+                    }
+                    val modelName = capability?.models?.firstOrNull { it.id == modelId }?.name ?: session?.modelName ?: agentName
+                    if (quotaNotice != null && context.session?.isTabClosed != true) Text(
+                        quotaNotice,
+                        style = LodyTheme.typography.footnote,
+                        color = LodyTheme.colors.textSecondary,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = LodySpacing.lg, vertical = LodySpacing.xs).testTag("session-free-turn-notice"),
+                    )
+                    if (context.session?.isTabClosed != true) ChatComposer(
+                        field,
+                        usage = if (chosen && modelId != usage?.modelId) usage?.copy(quota = null) else usage,
+                        onPromptChange = { if (it.text.length <= 32000) { field = app.lody.android.chat.MentionPresentation.edit(field, it); prompt = field.text } },
+                        onFocusChange = { composerFocused = it },
+                        focusRequester = composerFocusRequester,
+                        referencePresentation = mentions.presentation(LodyTheme.colors.accentOnSubtle, LodyTheme.colors.accentSubtle),
+                        enabled = canEdit,
+                        sending = outboxSending,
+                        quotaLocked = quotaLocked,
+                        agentCliType = session?.cliType,
+                        agentType = session?.agentType,
+                        roleEmoji = activeRole?.role?.emoji,
+                        roleName = activeRole?.role?.name,
+                        agentName = options?.agents?.firstOrNull { it.id == session?.agentConfigId }?.name ?: agentName.takeIf { it.isNotBlank() },
+                        face = listOfNotNull(modelName, effort),
+                        mode = modeId,
+                        modeLabel = capability?.modes?.firstOrNull { it.id == modeId }?.name,
+                        plan = capability?.planOn(optionValues) == true,
+                        fast = capability?.fastOn(optionValues, modelId) == true,
+                        onRunConfig = if (session != null) ({ runConfig = true }) else null,
+                        stoppable = runningTurn != null && controlReady,
+                        stopping = stopping,
+                        attachments = attachments,
+                        onPickPhotos = {
+                            photoPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                         },
-                        relations = if (hasRelations) ({ SessionRelationsChip(id, context.relatedSessions, onSelectTab) }) else null,
-                        devices = if (devicePlatforms.isNotEmpty()) ({
-                            devicePlatforms.forEach { platform ->
-                                DevicePreviewChip(platform, if (platform == DevicePlatform.IOS) iosPreview else androidPreview) { openDevice(platform) }
-                            }
-                        }) else null,
-                        onAction = { action ->
-                            // Only while still offered, so a menu left open cannot act for a state that moved on.
-                            when {
-                                writing != null || action !in bar.actions -> Unit
-                                action == SessionInfoBar.Action.Merge -> mergeTarget = bar.pullRequest
-                                action == SessionInfoBar.Action.ReadyForReview -> bar.pullRequest?.let { writePullRequest(it, null) }
-                                else -> sendText(bar.prompt(action, prompts), emptyList(), emptyList())
-                            }
-                        },
-                        onCopied = { coroutines.launch { snackbar.showSnackbar(it) } },
+                        onPickFiles = { filePicker.launch(arrayOf("*/*")) },
+                        onRemoveAttachment = { removed -> attachments = attachments.filterNot { it.id == removed } },
+                        quotes = quotes,
+                        onOpenQuote = { card -> quoteEditor = QuoteEditing(card.id, card.snapshot, card.comment) },
+                        onRemoveQuote = { removed -> quotes = quotes.filterNot { it.id == removed } },
+                        onSend = send,
+                        onStop = stop,
                     )
                 }
-                val modelName = capability?.models?.firstOrNull { it.id == modelId }?.name ?: session?.modelName ?: agentName
-                if (quotaNotice != null && context.session?.isTabClosed != true) Text(
-                    quotaNotice,
-                    style = LodyTheme.typography.footnote,
-                    color = LodyTheme.colors.textSecondary,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = LodySpacing.lg, vertical = LodySpacing.xs).testTag("session-free-turn-notice"),
-                )
-                if (context.session?.isTabClosed != true) ChatComposer(
-                    field,
-                    usage = if (chosen && modelId != usage?.modelId) usage?.copy(quota = null) else usage,
-                    onPromptChange = { if (it.text.length <= 32000) { field = app.lody.android.chat.MentionPresentation.edit(field, it); prompt = field.text } },
-                    onFocusChange = { composerFocused = it },
-                    referencePresentation = mentions.presentation(LodyTheme.colors.accentOnSubtle, LodyTheme.colors.accentSubtle),
-                    enabled = canEdit,
-                    sending = outboxSending,
-                    quotaLocked = quotaLocked,
-                    agentCliType = session?.cliType,
-                    agentType = session?.agentType,
-                    roleEmoji = activeRole?.role?.emoji,
-                    roleName = activeRole?.role?.name,
-                    agentName = options?.agents?.firstOrNull { it.id == session?.agentConfigId }?.name ?: agentName.takeIf { it.isNotBlank() },
-                    face = listOfNotNull(modelName, effort),
-                    mode = modeId,
-                    modeLabel = capability?.modes?.firstOrNull { it.id == modeId }?.name,
-                    plan = capability?.planOn(optionValues) == true,
-                    fast = capability?.fastOn(optionValues, modelId) == true,
-                    onRunConfig = if (session != null) ({ runConfig = true }) else null,
-                    stoppable = runningTurn != null && controlReady,
-                    stopping = stopping,
-                    attachments = attachments,
-                    onPickPhotos = {
-                        photoPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                    },
-                    onPickFiles = { filePicker.launch(arrayOf("*/*")) },
-                    onRemoveAttachment = { removed -> attachments = attachments.filterNot { it.id == removed } },
-                    quotes = quotes,
-                    onOpenQuote = { card -> quoteEditor = QuoteEditing(card.id, card.snapshot, card.comment) },
-                    onRemoveQuote = { removed -> quotes = quotes.filterNot { it.id == removed } },
-                    onSend = send,
-                    onStop = stop,
-                )
                 // Docked between the prompt and the keyboard; rows never take focus, so the keyboard stays.
-                MentionDock(mentions, field, active = composerFocused && canSend, loadShortcut = { shortcutId -> repository.shortcut(scope, shortcutId) }, height = mentionDockHeight) { next -> field = next; prompt = next.text }
+                MentionDock(mentions, field, active = composerFocused && canSend, loadShortcut = { shortcutId -> repository.shortcut(scope, shortcutId) }, height = { mentionDockHeight.value }) { next -> field = next; prompt = next.text }
             }
         }
     }
@@ -1610,31 +1719,47 @@ private const val UncommittedCacheTtlMs = 5_000L
 /** The conversation page's Status view actions; [tier] decides which apply. */
 internal class StatusMenu(val settle: Boolean, val focus: Boolean, val onLater: () -> Unit, val onSettle: () -> Unit, val onFocus: () -> Unit)
 
-@Composable
-private fun historySyncLabel(sync: RoostHistorySync): String {
-    val source = stringResource(if (sync.source == RoostHistorySync.Source.Machine)
-        R.string.chat_history_sync_machine else R.string.chat_history_sync_streams)
+internal data class HistorySyncNotice(
+    val detailRes: Int? = null,
+    val detailArg: Int? = null,
+    val previousRes: Int? = null,
+)
+
+/** Web `RoostHistorySyncIndicator`: omit source labels and surface only non-healthy or superseded states. */
+internal fun historySyncNotice(sync: RoostHistorySync): HistorySyncNotice? {
+    if (!sync.hasNotice) return null
     val httpStatus = sync.httpStatus
-    val detail = when (sync.phase) {
-        RoostHistorySync.Phase.Idle, RoostHistorySync.Phase.Ready -> null
-        RoostHistorySync.Phase.Checking -> stringResource(R.string.chat_history_sync_checking)
-        RoostHistorySync.Phase.Pending -> stringResource(R.string.chat_history_sync_pending)
-        RoostHistorySync.Phase.OwnerRequired -> stringResource(R.string.chat_history_sync_owner_required)
-        RoostHistorySync.Phase.Syncing -> stringResource(R.string.chat_history_sync_syncing)
+    val (detailRes, detailArg) = when (sync.phase) {
+        RoostHistorySync.Phase.Idle, RoostHistorySync.Phase.Ready -> null to null
+        RoostHistorySync.Phase.Checking -> R.string.chat_history_sync_checking to null
+        RoostHistorySync.Phase.Pending -> R.string.chat_history_sync_pending to null
+        RoostHistorySync.Phase.OwnerRequired -> R.string.chat_history_sync_owner_required to null
+        RoostHistorySync.Phase.Syncing -> R.string.chat_history_sync_syncing to null
         RoostHistorySync.Phase.Retrying -> when (httpStatus) {
-            403 -> stringResource(R.string.chat_history_sync_unconfirmed)
-            null -> stringResource(R.string.chat_history_sync_retrying)
-            else -> stringResource(R.string.chat_history_sync_retrying_http, httpStatus)
+            403 -> R.string.chat_history_sync_unconfirmed to null
+            null -> R.string.chat_history_sync_retrying to null
+            else -> R.string.chat_history_sync_retrying_http to httpStatus
         }
         RoostHistorySync.Phase.Refused -> when (httpStatus) {
-            401, 403 -> stringResource(R.string.chat_history_sync_denied)
-            null -> stringResource(R.string.chat_history_sync_unavailable)
-            else -> stringResource(R.string.chat_history_sync_refused, httpStatus)
+            401, 403 -> R.string.chat_history_sync_denied to null
+            null -> R.string.chat_history_sync_unavailable to null
+            else -> R.string.chat_history_sync_refused to httpStatus
         }
     }
-    val previous = if (sync.source == RoostHistorySync.Source.Streams && sync.newerVersionPending)
-        stringResource(R.string.chat_history_sync_previous) else null
-    return listOfNotNull(source, previous, detail).joinToString("\n")
+    val previousRes = if (sync.source == RoostHistorySync.Source.Streams && sync.newerVersionPending)
+        R.string.chat_history_sync_previous else null
+    if (detailRes == null && previousRes == null) return null
+    return HistorySyncNotice(detailRes, detailArg, previousRes)
+}
+
+@Composable
+private fun historySyncLabel(sync: RoostHistorySync): String? {
+    val notice = historySyncNotice(sync) ?: return null
+    val detail = notice.detailRes?.let { res ->
+        if (notice.detailArg != null) stringResource(res, notice.detailArg) else stringResource(res)
+    }
+    val previous = notice.previousRes?.let { stringResource(it) }
+    return listOfNotNull(detail, previous).takeIf { it.isNotEmpty() }?.joinToString("\n")
 }
 
 /** Floating header: title over the tappable machine subtitle, with conditional Tabs and More. */
@@ -1687,55 +1812,96 @@ internal fun BoxScope.ChatHeader(title: String, tabs: List<CatalogSession>, clos
                 }
             }
             var more by remember { mutableStateOf(false) }
+            var statusSubmenu by remember(currentId) { mutableStateOf(false) }
+            var previewSubmenu by remember(currentId) { mutableStateOf(false) }
             Box {
-                IconButton(onClick = { more = !more }, modifier = Modifier.size(LodySize.controlLg)) {
+                IconButton(onClick = { statusSubmenu = false; previewSubmenu = false; more = !more }, modifier = Modifier.size(LodySize.controlLg)) {
                     Icon(LodyIcons.More, stringResource(R.string.bar_more), tint = colors.iconPrimary, modifier = Modifier.size(LodyIconSize.md))
                 }
-                DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
-                    // The conversation's Status view actions, as on the list rows.
-                    if (status != null) {
-                        DropdownMenuItem(text = { Text(stringResource(R.string.status_later)) },
-                            leadingIcon = { Icon(LodyIcons.Clock, null) }, onClick = { more = false; status.onLater() })
-                        if (status.settle) DropdownMenuItem(text = { Text(stringResource(R.string.status_action_settle)) },
-                            leadingIcon = { Icon(LodyIcons.Check, null) }, onClick = { more = false; status.onSettle() })
-                        if (status.focus) DropdownMenuItem(text = { Text(stringResource(R.string.status_action_focus)) },
-                            leadingIcon = { Icon(LodyIcons.Undo, null) }, onClick = { more = false; status.onFocus() })
-                    }
-                    if (onBrowseFiles != null) DropdownMenuItem(text = { Text(stringResource(R.string.files_title)) },
-                        leadingIcon = { Icon(LodyIcons.Folder, null) }, onClick = { more = false; onBrowseFiles() })
-                    if (onShareImage != null) DropdownMenuItem(text = { Text(stringResource(R.string.share_image_action)) },
-                        enabled = !shareBusy,
-                        leadingIcon = { Icon(LodyIcons.Image, null) }, onClick = { more = false; onShareImage() })
-                    if (previews != null) {
-                        previews.browserLabel?.let { label ->
-                            DropdownMenuItem(text = { Text(label) }, enabled = !previews.browserBusy,
-                                leadingIcon = { Icon(LodyIcons.ExternalLink, null) }, onClick = { more = false; previews.onBrowser() })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.preview_copy_link)) }, enabled = !previews.browserBusy,
-                                leadingIcon = { Icon(LodyIcons.Link, null) }, onClick = { more = false; previews.onCopyBrowser() })
-                            if (previews.browserActive) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(if (previews.browserCanStopProcess) R.string.preview_disconnect_remote_only else R.string.preview_stop)) },
-                                    enabled = !previews.browserBusy,
-                                    leadingIcon = { Icon(LodyIcons.Stop, null) },
-                                    onClick = { more = false; previews.onStopBrowser(false) },
-                                )
-                                if (previews.browserCanStopProcess) {
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.preview_disconnect_and_stop_process), color = LodyTheme.colors.dangerDefault) },
-                                        enabled = !previews.browserBusy,
-                                        leadingIcon = { Icon(LodyIcons.Stop, null, tint = LodyTheme.colors.dangerDefault) },
-                                        onClick = { more = false; previews.onStopBrowser(true) },
-                                    )
+                DropdownMenu(expanded = more, onDismissRequest = { more = false; statusSubmenu = false; previewSubmenu = false }) {
+                    if (statusSubmenu && status != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.status_menu_title)) },
+                            leadingIcon = { Icon(LodyIcons.Back, stringResource(R.string.chat_back)) },
+                            onClick = { statusSubmenu = false },
+                        )
+                        HorizontalDivider(color = colors.borderSubtle)
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.status_later)) },
+                            leadingIcon = { Icon(LodyIcons.Clock, null) },
+                            onClick = { more = false; statusSubmenu = false; status.onLater() },
+                        )
+                        if (status.settle) DropdownMenuItem(
+                            text = { Text(stringResource(R.string.status_action_settle)) },
+                            leadingIcon = { Icon(LodyIcons.Check, null) },
+                            onClick = { more = false; statusSubmenu = false; status.onSettle() },
+                        )
+                        if (status.focus) DropdownMenuItem(
+                            text = { Text(stringResource(R.string.status_action_focus)) },
+                            leadingIcon = { Icon(LodyIcons.Undo, null) },
+                            onClick = { more = false; statusSubmenu = false; status.onFocus() },
+                        )
+                    } else if (previewSubmenu && previews != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.preview_menu_title)) },
+                            leadingIcon = { Icon(LodyIcons.Back, stringResource(R.string.chat_back)) },
+                            onClick = { previewSubmenu = false },
+                        )
+                        HorizontalDivider(color = colors.borderSubtle)
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(stringResource(R.string.preview_browser))
+                                    previews.browserLabel?.let { label ->
+                                        Text(label, style = LodyTheme.typography.footnote, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
                                 }
-                            }
+                            },
+                            enabled = !previews.browserBusy,
+                            leadingIcon = { Icon(LodyIcons.ExternalLink, null) },
+                            onClick = { more = false; previewSubmenu = false; previews.onBrowser() },
+                        )
+                        val iosColor = if (previews.iosDimmed) colors.textDisabled else colors.textPrimary
+                        val iosIconColor = if (previews.iosDimmed) colors.textDisabled else colors.iconPrimary
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.preview_ios), color = iosColor) },
+                            leadingIcon = { Icon(LodyIcons.Machine, null, tint = iosIconColor) },
+                            onClick = { more = false; previewSubmenu = false; previews.onIosSimulator() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.preview_android)) },
+                            leadingIcon = { Icon(LodyIcons.Desktop, null) },
+                            onClick = { more = false; previewSubmenu = false; previews.onAndroidEmulator() },
+                        )
+                    } else {
+                        if (onBrowseFiles != null) DropdownMenuItem(text = { Text(stringResource(R.string.files_title)) },
+                            leadingIcon = { Icon(LodyIcons.Folder, null) }, onClick = { more = false; onBrowseFiles() })
+                        if (previews != null) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.preview_menu_title)) },
+                                leadingIcon = { Icon(LodyIcons.Play, null) },
+                                trailingIcon = { Icon(LodyIcons.Forward, null, modifier = Modifier.size(LodyIconSize.sm)) },
+                                onClick = { previewSubmenu = true },
+                            )
                         }
+                        if (onShareImage != null) DropdownMenuItem(text = { Text(stringResource(R.string.share_image_action)) },
+                            enabled = !shareBusy,
+                            leadingIcon = { Icon(LodyIcons.Image, null) }, onClick = { more = false; onShareImage() })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.chat_new_tab)) }, enabled = !creating && busy == null,
+                            leadingIcon = { Icon(LodyIcons.Plus, null) }, onClick = { more = false; onNewTab() })
+                        if (closedTabs.isNotEmpty()) DropdownMenuItem(text = { Text(stringResource(R.string.chat_closed_tabs)) },
+                            onClick = { more = false; history = true; expanded = true })
+                        if (status != null) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.status_menu_title)) },
+                                leadingIcon = { Icon(LodyIcons.StateIdle, null) },
+                                trailingIcon = { Icon(LodyIcons.Forward, null, modifier = Modifier.size(LodyIconSize.sm)) },
+                                onClick = { statusSubmenu = true },
+                            )
+                        }
+                        DropdownMenuItem(text = { Text(stringResource(R.string.chat_close_current)) }, enabled = busy == null && tabs.any { it.id == currentId },
+                            onClick = { more = false; onChangeTab(currentId, true) })
                     }
-                    DropdownMenuItem(text = { Text(stringResource(R.string.chat_new_tab)) }, enabled = !creating && busy == null,
-                        leadingIcon = { Icon(LodyIcons.Plus, null) }, onClick = { more = false; onNewTab() })
-                    if (closedTabs.isNotEmpty()) DropdownMenuItem(text = { Text(stringResource(R.string.chat_closed_tabs)) },
-                        onClick = { more = false; history = true; expanded = true })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.chat_close_current)) }, enabled = busy == null && tabs.any { it.id == currentId },
-                        onClick = { more = false; onChangeTab(currentId, true) })
                 }
             }
         }
@@ -1857,6 +2023,7 @@ internal fun ChatComposer(
     prompt: androidx.compose.ui.text.input.TextFieldValue,
     onPromptChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
     onFocusChange: (Boolean) -> Unit,
+    focusRequester: androidx.compose.ui.focus.FocusRequester = remember { androidx.compose.ui.focus.FocusRequester() },
     referencePresentation: androidx.compose.ui.text.input.VisualTransformation = androidx.compose.ui.text.input.VisualTransformation.None,
     enabled: Boolean,
     agentCliType: String?,
@@ -2018,6 +2185,7 @@ internal fun ChatComposer(
                     maxLines = if (expanded) 10 else 1,
                     modifier = Modifier
                         .weight(1f)
+                        .focusRequester(focusRequester)
                         .onFocusChanged { focused = it.isFocused; onFocusChange(it.isFocused) }
                         .padding(horizontal = LodySpacing.sm, vertical = LodySpacing.sm)
                         .semantics { contentDescription = placeholder },
@@ -2745,7 +2913,7 @@ private fun ciVerdict(ci: String?): String? = when (ci) {
 }
 
 /**
- * The PR panel for a project PR opened from a transcript link that is not the action bar's PR:
+ * The PR panel for a PR opened from a transcript link that is not the action bar's PR:
  * what the catalog knows at once (any PR the session reported), then GitHub's state, branch and
  * ±lines from a read. Merge and Delete branch appear only once that state is known.
  */

@@ -184,6 +184,8 @@
     <string name="chat_forget_title">移除未确认的消息？</string>
     <string name="chat_forget_message">这会移除本地待确认消息，电脑仍可能收到或处理该消息。</string>
     <string name="chat_forget_action">本地移除</string>
+    <string name="chat_recover_action">核对并继续</string>
+    <string name="chat_recover_failed">暂时无法确认交接，消息仍待确认。请检查连接后重试。</string>
     <string name="chat_forget_failed">无法移除待确认消息，请重试。</string>
     <string name="chat_member">成员</string>
     <string name="chat_worked_for">工作了 %1$s</string>
@@ -191,8 +193,6 @@
     <string name="chat_composer_unavailable">正在连接对话…</string>
     <string name="chat_connection_connecting">正在连接</string>
     <string name="chat_connection_paused">连接已暂停，点击重新同步</string>
-    <string name="chat_history_sync_machine">历史来自目标机器</string>
-    <string name="chat_history_sync_streams">历史来自 Lody Streams</string>
     <string name="chat_history_sync_checking">正在确认云端历史</string>
     <string name="chat_history_sync_owner_required">需要目标机器确认历史读取权限</string>
     <string name="chat_history_sync_pending">等待发布云端历史</string>
@@ -1140,6 +1140,7 @@
     <string name="status_focus_drop">将对话拖到这里以移回进行中</string>
     <string name="status_action_settle">标记为已完成</string>
     <string name="status_action_focus">移回进行中</string>
+    <string name="status_menu_title">对话状态</string>
     <string name="status_action_pin">置顶</string>
     <string name="status_action_unpin">取消置顶</string>
     <string name="status_action_move_section">移动到分组</string>
@@ -1229,4 +1230,23 @@
     <plurals name="share_image_selected_count">
         <item quantity="other">已选择 %d 条</item>
     </plurals>
+    <string name="schedules_run_now_confirm">仍然运行</string>
+    <string name="schedules_run_now_busy_title">对话“%1$s”正在运行中</string>
+    <string name="schedules_run_now_busy_help">立即运行“%1$s”将按当前队列或引导策略向该对话发送新一轮任务。确定要继续吗？</string>
+    <string name="schedules_run_now_busy_detail_help">立即运行“%1$s”将使用上次保存的配置（不包含未保存修改），并按当前队列或引导策略向该对话发送新一轮任务。确定要继续吗？</string>
+    <string name="schedules_run_now_status_unknown_title">无法确认“%1$s”是否正在运行</string>
+    <string name="schedules_run_now_status_unknown_help">当前无法获取该对话的实时运行状态。立即运行“%1$s”可能会排队或与正在进行的工作并行。确定要继续吗？</string>
+    <string name="schedules_run_now_status_unknown_detail_help">当前无法获取该对话的实时运行状态。立即运行“%1$s”将使用上次保存的配置（不包含未保存修改），可能会排队或与正在进行的工作并行。确定要继续吗？</string>
+    <string name="schedules_destination_untitled_chat">未命名对话</string>
+    <string name="preview_menu_title">远程预览</string>
+    <string name="preview_browser">浏览器</string>
+    <string name="preview_owner_only">仅会话发起人可管理远程预览。</string>
+    <string name="preview_machine_offline">目标电脑已离线。</string>
+    <string name="preview_browser_empty_title">暂无可用浏览器预览</string>
+    <string name="preview_browser_empty_message">当前会话尚未上报 Web 预览地址。可将请求填入输入框，发送给 Agent 启动开发服务器并上报预览。</string>
+    <string name="preview_browser_stopped_message">%1$s 当前未响应。可将请求填入输入框，发送给 Agent 重新启动开发服务器并上报预览。</string>
+    <string name="preview_browser_empty_insert">填入输入框</string>
+    <string name="preview_browser_prompt">请启动当前项目的 Web 开发服务器并上报预览地址。</string>
+    <string name="preview_ios_requires_macos">需要 macOS</string>
+    <string name="preview_android_upgrade">请在 %1$s 上更新 Lody 后再预览 Android 模拟器。</string>
 </resources>

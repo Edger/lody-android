@@ -186,14 +186,14 @@
     <string name="chat_forget_message">This removes the local pending message. The computer may still receive or process it.</string>
     <string name="chat_forget_action">Remove locally</string>
     <string name="chat_forget_failed">Could not remove the pending message. Try again.</string>
+    <string name="chat_recover_action">Check and continue</string>
+    <string name="chat_recover_failed">Could not confirm delivery. The message is still pending; check the connection and try again.</string>
     <string name="chat_member">Member</string>
     <string name="chat_worked_for">Worked for %1$s</string>
     <string name="chat_composer_placeholder">Reply…</string>
     <string name="chat_composer_unavailable">Waiting for the conversation to connect…</string>
     <string name="chat_connection_connecting">Connecting</string>
     <string name="chat_connection_paused">Connection paused, tap to resync</string>
-    <string name="chat_history_sync_machine">History from the target machine</string>
-    <string name="chat_history_sync_streams">History from Lody Streams</string>
     <string name="chat_history_sync_checking">Checking cloud history</string>
     <string name="chat_history_sync_owner_required">The target machine must confirm access to this history</string>
     <string name="chat_history_sync_pending">Waiting for cloud publication</string>
@@ -1153,6 +1153,7 @@
     <string name="status_focus_drop">Drag a conversation here to focus</string>
     <string name="status_action_settle">Settle</string>
     <string name="status_action_focus">Move to Focus</string>
+    <string name="status_menu_title">Conversation status</string>
     <string name="status_action_pin">Pin</string>
     <string name="status_action_unpin">Unpin</string>
     <string name="status_action_move_section">Move to section</string>
@@ -1247,4 +1248,23 @@
         <item quantity="one">%d selected</item>
         <item quantity="other">%d selected</item>
     </plurals>
+    <string name="schedules_run_now_confirm">Run anyway</string>
+    <string name="schedules_run_now_busy_title">“%1$s” is currently running</string>
+    <string name="schedules_run_now_busy_help">Running “%1$s” now will send a new turn to this chat using its current queue or steer behavior. Run anyway?</string>
+    <string name="schedules_run_now_busy_detail_help">Running “%1$s” now uses the last saved schedule (unsaved edits are excluded) and will send a new turn to this chat using its current queue or steer behavior. Run anyway?</string>
+    <string name="schedules_run_now_status_unknown_title">Couldn’t confirm whether “%1$s” is running</string>
+    <string name="schedules_run_now_status_unknown_help">Live status for this chat is unavailable right now. Running “%1$s” now may queue or run alongside active work in this chat. Run anyway?</string>
+    <string name="schedules_run_now_status_unknown_detail_help">Live status for this chat is unavailable right now. Running “%1$s” uses the last saved schedule (unsaved edits are excluded) and may queue or run alongside active work in this chat. Run anyway?</string>
+    <string name="schedules_destination_untitled_chat">Untitled chat</string>
+    <string name="preview_menu_title">Remote preview</string>
+    <string name="preview_browser">Browser</string>
+    <string name="preview_owner_only">Only the session owner can manage remote previews.</string>
+    <string name="preview_machine_offline">This computer is offline.</string>
+    <string name="preview_browser_empty_title">No preview ready</string>
+    <string name="preview_browser_empty_message">No web preview address has been reported yet. Insert a prompt into the composer to ask the agent to start the dev server and report it.</string>
+    <string name="preview_browser_stopped_message">The dev server at %1$s is not responding. Insert a prompt into the composer to ask the agent to start it and report the preview.</string>
+    <string name="preview_browser_empty_insert">Insert into composer</string>
+    <string name="preview_browser_prompt">Start the web dev server for this project and report the preview URL.</string>
+    <string name="preview_ios_requires_macos">Requires macOS</string>
+    <string name="preview_android_upgrade">Update Lody on %1$s to preview the Android Emulator.</string>
 </resources>

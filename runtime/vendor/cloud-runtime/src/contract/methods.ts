@@ -45,6 +45,8 @@ import {
   ScheduleDetailParams,
   SchedulesParams,
   SchedulesResult,
+  SessionLiveStatusParams,
+  SessionLiveStatusResult,
 } from './schedules.ts';
 import {
   OpenSessionParams,
@@ -258,6 +260,11 @@ export const runtimeCalls = {
     result: ScheduleCommandResult,
     timeoutMs: 70_000,
   },
+  sessionLiveStatus: {
+    params: SessionLiveStatusParams,
+    result: SessionLiveStatusResult,
+    timeoutMs: 15_000,
+  },
   localProjects: {
     params: LocalProjectsParams,
     result: LocalProjectsResult,
@@ -375,7 +382,7 @@ export const runtimeCalls = {
   sendTurn: {
     params: SendTurnParams,
     result: SendTurnResult,
-    timeoutMs: 45_000,
+    timeoutMs: 90_000,
   },
   forkSession: {
     params: ForkSessionParams,
@@ -390,7 +397,7 @@ export const runtimeCalls = {
   retryPendingInput: {
     params: ForgetPendingInputParams,
     result: RetryPendingInputResult,
-    timeoutMs: 30_000,
+    timeoutMs: 60_000,
   },
   forgetPendingInput: {
     params: ForgetPendingInputParams,

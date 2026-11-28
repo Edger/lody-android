@@ -473,6 +473,7 @@ fun ChatListScreen(
                 onNew = { scheduleEditor = NEW_SCHEDULE },
                 onOpenSession = onOpenSession,
                 onNotice = notice,
+                snapshot = state.snapshot,
             )
             // First run (web `showChatOnboarding`): a loaded catalog with no computers and no chats at all,
             // archived included, regardless of the view menu's scope. Never while loading, searching or archived.
@@ -999,7 +1000,7 @@ internal fun HomeBottomBar(selected: HomeTab, collapsed: Boolean, onSelect: (Hom
  * Flat groups with a text header. Each family (a root row and its opened children) is one list
  * item, so it moves as a unit. With [status], rows offer the Status view actions: a long press
  * opens the action menu and moving while pressed turns into a drag; swipes reveal Settle / Later
- * (Archive on Settled) trailing and pin / unpin leading. Settled folds after
+ * (Focus / Archive on Settled) trailing and pin / unpin leading. Settled folds after
  * [ChatListModel.SETTLED_LIMIT] conversations.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -1400,7 +1401,12 @@ private fun rowActions(
         if (status && !settled) {
             add(SwipeAction(labels.settle, LodyIcons.Check) { actions!!.settle(target) })
             add(SwipeAction(labels.later, LodyIcons.Clock) { actions!!.later(target) })
-        } else if (archive != null && controls != null && settled) add(SwipeAction(labels.archive, LodyIcons.Inbox, danger = true, onClick = archive))
+        } else if (settled) {
+            if (status && tier == app.lody.android.runtime.StatusTier.Settled) {
+                add(SwipeAction(labels.focus, LodyIcons.Undo) { actions!!.focus(target) })
+            }
+            if (archive != null && controls != null) add(SwipeAction(labels.archive, LodyIcons.Inbox, danger = true, onClick = archive))
+        }
     }
     val leading = pin?.let { SwipeAction(if (chat.pinned) labels.unpin else labels.pin, LodyIcons.Pin, onClick = it) }
     return RowActions(target, status, settle = status && !settled, focus = status && (settled || later), pin, archive, leading, trailing)
@@ -1464,12 +1470,12 @@ private fun ArchiveItem(archived: Boolean, onClick: () -> Unit) {
 
 /** Localized row action labels, resolved once per row. */
 private data class RowLabels(
-    val later: String, val settle: String, val pin: String, val unpin: String, val archive: String,
+    val later: String, val settle: String, val focus: String, val pin: String, val unpin: String, val archive: String,
     val moveUp: String, val moveDown: String, val actions: String,
 ) {
     companion object {
         @Composable fun current() = RowLabels(
-            stringResource(R.string.status_later), stringResource(R.string.status_action_settle),
+            stringResource(R.string.status_later), stringResource(R.string.status_action_settle), stringResource(R.string.status_focus),
             stringResource(R.string.status_action_pin), stringResource(R.string.status_action_unpin),
             stringResource(R.string.home_archive), stringResource(R.string.status_action_move_up),
             stringResource(R.string.status_action_move_down), stringResource(R.string.bar_more),

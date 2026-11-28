@@ -165,6 +165,8 @@
     <string name="chat_forget_title">Supprimer le message non confirmé ?</string>
     <string name="chat_forget_message">Cela supprime le message local en attente. L’ordinateur pourrait tout de même le recevoir ou le traiter.</string>
     <string name="chat_forget_action">Supprimer localement</string>
+    <string name="chat_recover_action">Vérifier et continuer</string>
+    <string name="chat_recover_failed">Impossible de confirmer l’envoi. Le message est toujours en attente ; vérifiez la connexion et réessayez.</string>
     <string name="chat_forget_failed">Impossible de supprimer le message en attente. Réessayez.</string>
     <string name="chat_member">Membre</string>
     <string name="chat_worked_for">A travaillé pendant %1$s</string>
@@ -172,8 +174,6 @@
     <string name="chat_composer_unavailable">En attente de connexion à la conversation…</string>
     <string name="chat_connection_connecting">Connexion en cours</string>
     <string name="chat_connection_paused">Connexion en pause, touchez pour resynchroniser</string>
-    <string name="chat_history_sync_machine">Historique de l’ordinateur distant</string>
-    <string name="chat_history_sync_streams">Historique de Lody Streams</string>
     <string name="chat_history_sync_checking">Vérification de l’historique dans le cloud</string>
     <string name="chat_history_sync_owner_required">L’ordinateur distant doit confirmer l’accès à cet historique</string>
     <string name="chat_history_sync_pending">En attente de la publication de l’historique dans le cloud</string>
@@ -1131,6 +1131,7 @@
     <string name="status_focus_drop">Glissez une conversation ici pour la placer dans Focus</string>
     <string name="status_action_settle">Marquer comme terminée</string>
     <string name="status_action_focus">Déplacer vers Focus</string>
+    <string name="status_menu_title">Statut de la conversation</string>
     <string name="status_action_pin">Épingler</string>
     <string name="status_action_unpin">Désépingler</string>
     <string name="status_action_move_section">Déplacer vers une section</string>
@@ -1192,4 +1193,23 @@
     </plurals>
     <string name="preferences_usage_sharing">Partager les données d’utilisation pour améliorer Lody</string>
     <string name="preferences_sharing_retry">Impossible de confirmer le réglage. Appuyez pour réessayer.</string>
+    <string name="schedules_run_now_confirm">Exécuter quand même</string>
+    <string name="schedules_run_now_busy_title">« %1$s » est en cours d’exécution</string>
+    <string name="schedules_run_now_busy_help">Exécuter « %1$s » maintenant enverra un nouveau tour à cette discussion selon son comportement actuel de file d’attente ou de guidage. Exécuter quand même ?</string>
+    <string name="schedules_run_now_busy_detail_help">Exécuter « %1$s » maintenant utilise la dernière planification enregistrée (les modifications non enregistrées sont exclues) et enverra un nouveau tour à cette discussion selon son comportement actuel de file d’attente ou de guidage. Exécuter quand même ?</string>
+    <string name="schedules_run_now_status_unknown_title">Impossible de confirmer si « %1$s » est en cours d’exécution</string>
+    <string name="schedules_run_now_status_unknown_help">L’état en direct de cette discussion est actuellement indisponible. Exécuter « %1$s » maintenant peut mettre en file ou s’exécuter en parallèle d’un travail actif. Exécuter quand même ?</string>
+    <string name="schedules_run_now_status_unknown_detail_help">L’état en direct de cette discussion est actuellement indisponible. Exécuter « %1$s » utilise la dernière planification enregistrée (les modifications non enregistrées sont exclues) et peut mettre en file ou s’exécuter en parallèle d’un travail actif. Exécuter quand même ?</string>
+    <string name="schedules_destination_untitled_chat">Discussion sans titre</string>
+    <string name="preview_menu_title">Aperçu à distance</string>
+    <string name="preview_browser">Navigateur</string>
+    <string name="preview_owner_only">Seul le propriétaire de la session peut gérer les aperçus à distance.</string>
+    <string name="preview_machine_offline">Cet ordinateur est hors ligne.</string>
+    <string name="preview_browser_empty_title">Aucun aperçu disponible</string>
+    <string name="preview_browser_empty_message">Aucune adresse d’aperçu web n’a encore été signalée. Insérez une demande dans le champ de saisie pour demander à l’agent de démarrer le serveur et de la signaler.</string>
+    <string name="preview_browser_stopped_message">Le serveur à l’adresse %1$s ne répond pas. Insérez une demande dans le champ de saisie pour demander à l’agent de le redémarrer et de signaler l’aperçu.</string>
+    <string name="preview_browser_empty_insert">Insérer dans la saisie</string>
+    <string name="preview_browser_prompt">Démarre le serveur de développement web de ce projet et signale l’URL d’aperçu.</string>
+    <string name="preview_ios_requires_macos">Nécessite macOS</string>
+    <string name="preview_android_upgrade">Mettez à jour Lody sur %1$s pour prévisualiser l’émulateur Android.</string>
 </resources>

@@ -360,6 +360,23 @@ val MentionPanelHeight = 280.dp
 /** The least a host may shrink the panel to when it lacks room; its lists scroll (iOS `minimumDockHeight`). */
 val MentionPanelMinimumHeight = 120.dp
 
+/**
+ * Fits the mention panel into the vertical room below [headerRoom] and [chromeHeight] so opening
+ * the panel never pushes the composer under the floating header (iOS `ChatComposerView.fitPageRoom`).
+ * Derived only from heights independent of the dock itself, so the dock's expand animation cannot
+ * feed back into its own target height.
+ */
+internal fun fitMentionDockHeight(
+    availableHeight: androidx.compose.ui.unit.Dp,
+    headerRoom: androidx.compose.ui.unit.Dp,
+    chromeHeight: androidx.compose.ui.unit.Dp,
+    maximum: androidx.compose.ui.unit.Dp = MentionPanelHeight,
+    minimum: androidx.compose.ui.unit.Dp = MentionPanelMinimumHeight,
+): androidx.compose.ui.unit.Dp {
+    if (availableHeight <= 0.dp) return maximum
+    return (availableHeight - headerRoom - chromeHeight).coerceIn(minimum, maximum)
+}
+
 /** One composer's references: the catalogs read for it and the panel's level stack. */
 @Stable
 class MentionState {
@@ -453,7 +470,7 @@ fun MentionDock(
     /** Reads a prompt shortcut's body by id; without it the `/shortcut:<slug>` token goes in. */
     loadShortcut: (suspend (String) -> org.json.JSONObject)? = null,
     /** The panel's height; a host short of room passes less, down to [MentionPanelMinimumHeight]. */
-    height: androidx.compose.ui.unit.Dp = MentionPanelHeight,
+    height: () -> androidx.compose.ui.unit.Dp = { MentionPanelHeight },
     onFieldChange: (TextFieldValue) -> Unit,
 ) {
     val loads = androidx.compose.runtime.rememberCoroutineScope()
@@ -488,7 +505,7 @@ fun MentionDock(
         exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
     ) {
         MentionPanel(
-            height = height,
+            height = height(),
             stack = state.stack,
             rowsFor = { level -> if (trigger == null) emptyList() else Mentions.rows(level, state.catalogs, trigger) },
             loading = { level ->

@@ -149,10 +149,17 @@ const { machineReplicas, catalogs, unhealthy } = state;
 let stopPresence: (() => void) | undefined;
 function startPresence() {
   stopPresence?.();
-  stopPresence = watchMachinePresence(state.workspace, getGrant, (value) => {
-    state.presence = value;
-    channel.emit('machinePresence', value);
-  });
+  stopPresence = watchMachinePresence(
+    state.workspace,
+    getGrant,
+    (value) => {
+      state.presence = value;
+      channel.emit('machinePresence', value);
+    },
+    (reader) => {
+      state.getLiveSessionPresence = reader;
+    },
+  );
 }
 
 /** What the Status view layout and planner read, at the server clock's now. */
@@ -266,6 +273,10 @@ async function markDispatch(sessionId: string, turnId: string, queued = false) {
       },
     });
     if (!result.ok) throw new Error(result.result.code);
+    if (state.metaReplica?.flock === flock) {
+      catalogs.set('meta', projectRows(flock.scan(), 'meta'));
+      publish();
+    }
   } catch (error) {
     // An unsent dispatch pointer left in the replica would read as delivered
     // and stop the owner from retrying it.
@@ -871,6 +882,7 @@ const ctx: RuntimeContext = {
   stopPresence: () => {
     stopPresence?.();
     stopPresence = undefined;
+    state.getLiveSessionPresence = undefined;
   },
 };
 registerLifecycle(ctx);

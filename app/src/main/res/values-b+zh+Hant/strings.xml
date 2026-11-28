@@ -165,6 +165,8 @@
     <string name="chat_forget_title">移除未確認的訊息？</string>
     <string name="chat_forget_message">這會移除本機的待確認訊息，電腦仍可能收到或處理該訊息。</string>
     <string name="chat_forget_action">從本機移除</string>
+    <string name="chat_recover_action">檢查並繼續</string>
+    <string name="chat_recover_failed">無法確認送達，訊息仍處於等待確認狀態。請檢查連線後再試。</string>
     <string name="chat_forget_failed">無法移除待確認訊息，請再試一次。</string>
     <string name="chat_member">成員</string>
     <string name="chat_worked_for">已工作 %1$s</string>
@@ -172,8 +174,6 @@
     <string name="chat_composer_unavailable">正在等待對話連線…</string>
     <string name="chat_connection_connecting">連線中</string>
     <string name="chat_connection_paused">連線已暫停，點擊重新同步</string>
-    <string name="chat_history_sync_machine">歷史來自目標電腦</string>
-    <string name="chat_history_sync_streams">歷史來自 Lody Streams</string>
     <string name="chat_history_sync_checking">正在確認雲端歷史</string>
     <string name="chat_history_sync_owner_required">需要目標電腦確認歷史讀取權限</string>
     <string name="chat_history_sync_pending">等待發布雲端歷史</string>
@@ -1131,6 +1131,7 @@
     <string name="status_focus_drop">將對話拖曳至此以移回進行中</string>
     <string name="status_action_settle">標記為已完成</string>
     <string name="status_action_focus">移回進行中</string>
+    <string name="status_menu_title">對話狀態</string>
     <string name="status_action_pin">釘選</string>
     <string name="status_action_unpin">取消釘選</string>
     <string name="status_action_move_section">移至分區</string>
@@ -1192,4 +1193,23 @@
     </plurals>
     <string name="preferences_usage_sharing">分享應用程式使用資料，協助改進 Lody</string>
     <string name="preferences_sharing_retry">無法確認設定，點一下重試。</string>
+    <string name="schedules_run_now_confirm">仍然執行</string>
+    <string name="schedules_run_now_busy_title">對話「%1$s」正在執行中</string>
+    <string name="schedules_run_now_busy_help">立即執行「%1$s」將依目前佇列或引導行為向此對話傳送新一輪工作。確定要繼續嗎？</string>
+    <string name="schedules_run_now_busy_detail_help">立即執行「%1$s」將使用上次儲存的排程（不包含未儲存的變更），並依目前佇列或引導行為向此對話傳送新一輪工作。確定要繼續嗎？</string>
+    <string name="schedules_run_now_status_unknown_title">無法確認「%1$s」是否正在執行</string>
+    <string name="schedules_run_now_status_unknown_help">目前無法取得此對話的即時執行狀態。立即執行「%1$s」可能會排隊或與進行中的工作並行。確定要繼續嗎？</string>
+    <string name="schedules_run_now_status_unknown_detail_help">目前無法取得此對話的即時執行狀態。立即執行「%1$s」將使用上次儲存的排程（不包含未儲存的變更），可能會排隊或與進行中的工作並行。確定要繼續嗎？</string>
+    <string name="schedules_destination_untitled_chat">未命名對話</string>
+    <string name="preview_menu_title">遠端預覽</string>
+    <string name="preview_browser">瀏覽器</string>
+    <string name="preview_owner_only">僅工作階段發起人可管理遠端預覽。</string>
+    <string name="preview_machine_offline">目標電腦已離線。</string>
+    <string name="preview_browser_empty_title">尚無可用的瀏覽器預覽</string>
+    <string name="preview_browser_empty_message">目前工作階段尚未回報 Web 預覽位址。可將請求填入輸入框，傳送給 Agent 啟動開發伺服器並回報預覽。</string>
+    <string name="preview_browser_stopped_message">%1$s 目前未回應。可將請求填入輸入框，傳送給 Agent 重新啟動開發伺服器並回報預覽。</string>
+    <string name="preview_browser_empty_insert">填入輸入框</string>
+    <string name="preview_browser_prompt">請啟動目前專案的 Web 開發伺服器並回報預覽位址。</string>
+    <string name="preview_ios_requires_macos">需要 macOS</string>
+    <string name="preview_android_upgrade">請在 %1$s 上更新 Lody 後再預覽 Android 模擬器。</string>
 </resources>

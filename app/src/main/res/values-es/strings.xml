@@ -165,6 +165,8 @@
     <string name="chat_forget_title">¿Eliminar el mensaje sin confirmar?</string>
     <string name="chat_forget_message">Esto elimina el mensaje pendiente local. Es posible que el equipo aún lo reciba o lo procese.</string>
     <string name="chat_forget_action">Eliminar localmente</string>
+    <string name="chat_recover_action">Comprobar y continuar</string>
+    <string name="chat_recover_failed">No se pudo confirmar la entrega. El mensaje sigue pendiente; comprueba la conexión e inténtalo de nuevo.</string>
     <string name="chat_forget_failed">No se pudo eliminar el mensaje pendiente. Inténtalo de nuevo.</string>
     <string name="chat_member">Miembro</string>
     <string name="chat_worked_for">Trabajó durante %1$s</string>
@@ -172,8 +174,6 @@
     <string name="chat_composer_unavailable">Esperando a que la conversación se conecte…</string>
     <string name="chat_connection_connecting">Conectando</string>
     <string name="chat_connection_paused">Conexión en pausa; toca para resincronizar</string>
-    <string name="chat_history_sync_machine">Historial del equipo de destino</string>
-    <string name="chat_history_sync_streams">Historial de Lody Streams</string>
     <string name="chat_history_sync_checking">Comprobando el historial en la nube</string>
     <string name="chat_history_sync_owner_required">El equipo de destino debe confirmar el acceso a este historial</string>
     <string name="chat_history_sync_pending">Esperando a que el historial se publique en la nube</string>
@@ -1131,6 +1131,7 @@
     <string name="status_focus_drop">Arrastra una conversación aquí para moverla a Enfoque</string>
     <string name="status_action_settle">Completar</string>
     <string name="status_action_focus">Mover a Enfoque</string>
+    <string name="status_menu_title">Estado de la conversación</string>
     <string name="status_action_pin">Fijar</string>
     <string name="status_action_unpin">Dejar de fijar</string>
     <string name="status_action_move_section">Mover a sección</string>
@@ -1192,4 +1193,23 @@
     </plurals>
     <string name="preferences_usage_sharing">Compartir datos de uso de la app para ayudar a mejorar Lody</string>
     <string name="preferences_sharing_retry">No se pudo confirmar la configuración. Toca para reintentar.</string>
+    <string name="schedules_run_now_confirm">Ejecutar de todos modos</string>
+    <string name="schedules_run_now_busy_title">“%1$s” se está ejecutando ahora</string>
+    <string name="schedules_run_now_busy_help">Ejecutar “%1$s” ahora enviará un nuevo turno a este chat según su comportamiento actual de cola o dirección. ¿Ejecutar de todos modos?</string>
+    <string name="schedules_run_now_busy_detail_help">Ejecutar “%1$s” ahora usa la última programación guardada (se excluyen los cambios sin guardar) y enviará un nuevo turno a este chat según su comportamiento actual de cola o dirección. ¿Ejecutar de todos modos?</string>
+    <string name="schedules_run_now_status_unknown_title">No se pudo confirmar si “%1$s” está en ejecución</string>
+    <string name="schedules_run_now_status_unknown_help">El estado en vivo de este chat no está disponible en este momento. Ejecutar “%1$s” ahora puede ponerse en cola o ejecutarse junto con trabajo activo. ¿Ejecutar de todos modos?</string>
+    <string name="schedules_run_now_status_unknown_detail_help">El estado en vivo de este chat no está disponible en este momento. Ejecutar “%1$s” usa la última programación guardada (se excluyen los cambios sin guardar) y puede ponerse en cola o ejecutarse junto con trabajo activo. ¿Ejecutar de todos modos?</string>
+    <string name="schedules_destination_untitled_chat">Chat sin título</string>
+    <string name="preview_menu_title">Vista previa remota</string>
+    <string name="preview_browser">Navegador</string>
+    <string name="preview_owner_only">Solo el propietario de la sesión puede gestionar las vistas previas remotas.</string>
+    <string name="preview_machine_offline">Este equipo está desconectado.</string>
+    <string name="preview_browser_empty_title">No hay vista previa disponible</string>
+    <string name="preview_browser_empty_message">Aún no se ha informado ninguna dirección de vista previa web. Puedes insertar una solicitud en el campo de entrada para pedir al agente que inicie el servidor y la informe.</string>
+    <string name="preview_browser_stopped_message">El servidor en %1$s no responde. Puedes insertar una solicitud en el campo de entrada para pedir al agente que lo reinicie e informe la vista previa.</string>
+    <string name="preview_browser_empty_insert">Insertar en el mensaje</string>
+    <string name="preview_browser_prompt">Inicia el servidor de desarrollo web de este proyecto e informa la URL de vista previa.</string>
+    <string name="preview_ios_requires_macos">Requiere macOS</string>
+    <string name="preview_android_upgrade">Actualiza Lody en %1$s para previsualizar el emulador de Android.</string>
 </resources>

@@ -107,6 +107,8 @@ sealed interface RuntimeCommand {
     data class ScheduleDetail(val scheduleId: String) : RuntimeCommand
     /** An owner write (create / edit / pause / resume / run / delete); never retried here. */
     data class ScheduleCommand(val request: ScheduleCommandRequest) : RuntimeCommand
+    /** Live-status check for a schedule's bound chat before manual Run now. Read only. */
+    data class SessionLiveStatus(val sessionId: String, val machineId: String? = null) : RuntimeCommand
     /** The watched session's managed web preview: create (or reuse), check status, or revoke. Never retried. */
     data class SessionPreview(
         val sessionId: String,
@@ -156,6 +158,7 @@ sealed interface RuntimeResult {
     data class Schedule(val value: app.lody.android.runtime.ScheduleDetail) : RuntimeResult
     /** The schedule a command wrote. */
     data class ScheduleWritten(val scheduleId: String) : RuntimeResult
+    data class SessionLiveStatus(val value: app.lody.android.runtime.SessionLiveStatus) : RuntimeResult
     /** A proposal's recorded outcome (`saved` / `created` / `applied` / `dismissed`). */
     data class ProposalDecided(val outcome: String, val scheduleId: String? = null) : RuntimeResult
     data class ProposalInspected(val value: ProposalInspection) : RuntimeResult
@@ -165,6 +168,8 @@ sealed interface RuntimeResult {
     data class Plan(val tier: String?) : RuntimeResult
     /** Upstream send state (`sent` / `queued` / `not_sent` / `unknown`); a machine ACK is delivery only. */
     data class Sent(val state: String, val reason: String? = null) : RuntimeResult
+    /** Authoritative pending-input reconciliation outcome (`pending` / `accepted` / `queued` / `settled` / `not_saved` / `terminal`). */
+    data class PendingInputRetried(val state: String) : RuntimeResult
     data object Accepted : RuntimeResult
     data class SnoozePresets(val value: List<SnoozePreset>) : RuntimeResult
     /** Session metadata patches and pin-section rows a Status view command wrote; 0 is refused or a no-op. */
@@ -475,6 +480,10 @@ data class RoostHistorySync(
         Retrying("retrying"),
         Refused("refused"),
     }
+
+    /** Web `hasRoostHistorySyncNotice`: healthy history (`idle` / `ready` at current version) shows nothing. */
+    val hasNotice: Boolean
+        get() = (phase != Phase.Idle && phase != Phase.Ready) || (source == Source.Streams && newerVersionPending)
 }
 
 /** [preview]: the session's managed web preview candidate, null without one. */

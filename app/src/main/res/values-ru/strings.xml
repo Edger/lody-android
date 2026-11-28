@@ -167,6 +167,8 @@
     <string name="chat_forget_title">Удалить неподтверждённое сообщение?</string>
     <string name="chat_forget_message">Это удалит локальное сообщение из очереди отправки. Компьютер всё ещё может получить или обработать его.</string>
     <string name="chat_forget_action">Удалить локально</string>
+    <string name="chat_recover_action">Проверить и продолжить</string>
+    <string name="chat_recover_failed">Не удалось подтвердить доставку. Сообщение ещё ожидает отправки; проверьте подключение и повторите попытку.</string>
     <string name="chat_forget_failed">Не удалось удалить ожидающее сообщение. Попробуйте ещё раз.</string>
     <string name="chat_member">Участник</string>
     <string name="chat_worked_for">Выполнено за %1$s</string>
@@ -174,8 +176,6 @@
     <string name="chat_composer_unavailable">Ожидание подключения к диалогу…</string>
     <string name="chat_connection_connecting">Подключение</string>
     <string name="chat_connection_paused">Подключение приостановлено, нажмите для синхронизации</string>
-    <string name="chat_history_sync_machine">История с целевого компьютера</string>
-    <string name="chat_history_sync_streams">История из Lody Streams</string>
     <string name="chat_history_sync_checking">Проверяем историю в облаке</string>
     <string name="chat_history_sync_owner_required">Целевой компьютер должен подтвердить доступ к этой истории</string>
     <string name="chat_history_sync_pending">Ожидаем публикации истории в облаке</string>
@@ -1183,6 +1183,7 @@
     <string name="status_focus_drop">Перетащите чат сюда, чтобы добавить в «Фокус»</string>
     <string name="status_action_settle">Завершить</string>
     <string name="status_action_focus">Перенести в «Фокус»</string>
+    <string name="status_menu_title">Статус диалога</string>
     <string name="status_action_pin">Закрепить</string>
     <string name="status_action_unpin">Открепить</string>
     <string name="status_action_move_section">Перенести в раздел</string>
@@ -1252,4 +1253,23 @@
     </plurals>
     <string name="preferences_usage_sharing">Делиться данными об использовании приложения, чтобы помогать улучшать Lody</string>
     <string name="preferences_sharing_retry">Не удалось подтвердить настройку. Нажмите, чтобы повторить.</string>
+    <string name="schedules_run_now_confirm">Всё равно запустить</string>
+    <string name="schedules_run_now_busy_title">Чат «%1$s» сейчас выполняется</string>
+    <string name="schedules_run_now_busy_help">Запуск «%1$s» сейчас отправит новый ход в этот чат согласно текущим правилам очереди или направления. Всё равно запустить?</string>
+    <string name="schedules_run_now_busy_detail_help">Запуск «%1$s» сейчас использует последнее сохранённое расписание (без несохранённых правок) и отправит новый ход в этот чат согласно текущим правилам очереди или направления. Всё равно запустить?</string>
+    <string name="schedules_run_now_status_unknown_title">Не удалось проверить, выполняется ли «%1$s»</string>
+    <string name="schedules_run_now_status_unknown_help">Текущий статус выполнения этого чата недоступен. Запуск «%1$s» сейчас может встать в очередь или выполняться параллельно с активной работой. Всё равно запустить?</string>
+    <string name="schedules_run_now_status_unknown_detail_help">Текущий статус выполнения этого чата недоступен. Запуск «%1$s» использует последнее сохранённое расписание (без несохранённых правок) и может встать в очередь или выполняться параллельно с активной работой. Всё равно запустить?</string>
+    <string name="schedules_destination_untitled_chat">Чат без названия</string>
+    <string name="preview_menu_title">Удалённый предпросмотр</string>
+    <string name="preview_browser">Браузер</string>
+    <string name="preview_owner_only">Управлять удалённым предпросмотром может только владелец сессии.</string>
+    <string name="preview_machine_offline">Этот компьютер не в сети.</string>
+    <string name="preview_browser_empty_title">Предпросмотр недоступен</string>
+    <string name="preview_browser_empty_message">Адрес веб-предпросмотра ещё не передан. Вставьте запрос в поле ввода, чтобы попросить агента запустить сервер разработки и сообщить адрес.</string>
+    <string name="preview_browser_stopped_message">Сервер разработки по адресу %1$s не отвечает. Вставьте запрос в поле ввода, чтобы попросить агента перезапустить его и передать адрес.</string>
+    <string name="preview_browser_empty_insert">Вставить в поле ввода</string>
+    <string name="preview_browser_prompt">Запусти веб-сервер разработки для этого проекта и передай URL предпросмотра.</string>
+    <string name="preview_ios_requires_macos">Требуется macOS</string>
+    <string name="preview_android_upgrade">Обновите Lody на %1$s для предпросмотра эмулятора Android.</string>
 </resources>
